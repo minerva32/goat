@@ -11,7 +11,7 @@ if [[ "${GOAT_PERSONAL_UPDATE_LOCKED:-0}" != 1 ]]; then
 fi
 
 cd "$repo_dir"
-export PATH="$HOME/.cargo/bin:$repo_dir/node_modules/.bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:$repo_dir/node_modules/.bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 [[ "$(uname -s)" == Darwin ]] || { print -u2 'Mac release builds require macOS.'; exit 1; }
 [[ -z "$(git status --porcelain)" ]] || { print -u2 'Personal GOAT checkout has uncommitted changes.'; exit 1; }
 [[ "$(git branch --show-current)" == personal/agent-settings ]] || {
