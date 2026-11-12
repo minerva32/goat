@@ -16,7 +16,11 @@ environment variables or headers; GOAT stores those values as secrets and shows
 them masked. Don't put secrets in the address itself.
 
 Full-access agents with `settings:write` may also add or change these servers
-through `environment.settings_update`. New threads pick up the change.
+through `environment.settings_update`. Enter secret environment variables and
+headers in Settings; agents can preserve masked values but cannot set them.
+An agent also cannot remove a server while it holds a saved secret; remove the
+secret in Settings first.
+New threads pick up the change.
 
 Servers apply to threads started after you add them. Agents see each one as
 `<name>_goat`.

@@ -86,6 +86,7 @@ import {
 import {
   agentWorkspaceTerminalSettingsMethods,
   rejectAgentWorkspaceTerminalPolicyChange,
+  type SettingsMethods,
 } from "./AgentWorkspaceTerminalPolicy.ts";
 import { makeCheckpointReplicationAdmission } from "./serverSettingsCheckpointAdmission.ts";
 import { preserveSecretReferences } from "./provider/preserveSecretReferences.ts";
@@ -772,6 +773,7 @@ export class ServerSettingsService extends Context.Service<
       agentTerminalBinding?: AgentTerminalBinding,
       authorizeAtCommit?: Effect.Effect<void, ServerSettingsError>,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
+    readonly updateAgentWorkspaceTerminalPolicyAsAgent?: SettingsMethods["updateAgentWorkspaceTerminalPolicyAsAgent"];
     readonly updateSettings: (
       patch: ServerSettingsPatch,
       /** Runs inside the write lock before the patch applies, so a revoked grant cannot commit. */

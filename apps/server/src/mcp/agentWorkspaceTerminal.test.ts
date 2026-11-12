@@ -831,7 +831,7 @@ it.effect("#2059 retains committed provider credentials when Hub withdrawal fail
   }).pipe(Effect.scoped, Effect.provide(ConnectRuntime.storage)),
 );
 
-it.effect("#2059 the generic settings tool refuses to enable workspace or terminal authority", () =>
+it.effect("#2059 a settings-only client cannot enable workspace or terminal authority", () =>
   Effect.gen(function* () {
     const toolkit = yield* EnvironmentToolkit;
     for (const patch of [

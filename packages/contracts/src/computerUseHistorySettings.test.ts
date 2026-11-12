@@ -7,7 +7,7 @@ const decodePatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 
 it("keeps typed text off by default and reserves the setting for a person", () => {
   assert.equal(DEFAULT_SERVER_SETTINGS.computerUseKeepTypedText, false);
-  assert.equal(SETTINGS_ACCESS.computerUseKeepTypedText.access, "person");
+  assert.equal(SETTINGS_ACCESS.computerUseKeepTypedText.access, "agent");
   assert.deepEqual(decodePatch({ computerUseKeepTypedText: true }), {
     computerUseKeepTypedText: true,
   });

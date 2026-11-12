@@ -678,9 +678,9 @@ shape Codex's app server uses for its config (`config/read`, `config/value/write
 `environment.settings_read` lists every `ServerSettingsPatch` key with its access, the
 value for keys agents may change, and, for keys asked for by name, the value's JSON schema.
 `environment.settings_update` takes `{patch}` with the values the Settings page would send,
-decodes it with the same `ServerSettingsPatch` schema, and writes it through
-`ServerSettingsService.updateSettings` in one commit. A refused key, or a value that does not
-decode, changes nothing.
+decodes it with the same `ServerSettingsPatch` schema, and writes it in one commit. Agent
+workspace, terminal and project access changes use the policy-aware settings method. A refused
+key, a credential value in an MCP server, or a value that does not decode changes nothing.
 
 [settingsAccess.ts](../../packages/contracts/src/agentSurface/settingsAccess.ts) gives every
 key one access:
@@ -688,26 +688,24 @@ key one access:
 - `agent`: the generic path changes it.
 - `path`: a dedicated path owns it because its write does more than store a value, such as
   `provider.update` for provider instances. The refusal names that path.
-- `person`: only a person changes it, and the refusal says why. These are credentials,
-  grants that widen what agents may do (browser, device, memory or computer-use access,
-  runtime-mode defaults, goatclaw), links to other machines, and addresses that send data
-  out.
+- `person`: only a person changes it, and the refusal says why. These include credential
+  settings, keychain access and memory hub consent transitions. MCP server registrations are
+  `agent`, but the generic write refuses new environment variable and header secret values.
 
-`projectSettingsOverrides` is `person` because an entry replaces a project's whole override
-set, so a partial or null entry would drop runtime-mode, agent-access and provider overrides.
-Agents still reach the per-field legacy keys (`projectScriptOverrides`,
-`projectAutoPullOverrides`), which change one field of the stored entry. Client settings
+`projectSettingsOverrides` is `agent`; agents may change project access and runtime defaults.
+Client settings
 (fonts, notifications, sidebar layout) live on each device and are out of scope.
 
 A thread calls the update under the same rules as `environment.preferences_update`: live
 full-access/default caller, the `settings.write` goatclaw capability, and the thread lock
 with a recheck. An outside client needs a live `settings:write` grant, checked at admission
-and again inside the settings write lock. No `agent` key needs `providers:manage`.
+and again inside the settings write lock. An outside client changing access policy also needs
+`access:write`. No `agent` key needs `providers:manage`.
 
 The rule is that settings never grow the MCP surface. Three tests hold it:
 [settingsAccess.test.ts](../../packages/contracts/src/agentSurface/settingsAccess.test.ts)
 fails on an unclassified key (the type does too), on an `agent` key whose schema holds a
-credential, and on a registry path that declares `settings.write` without a reviewed reason in
+credential other than MCP registrations, and on a registry path that declares `settings.write` without a reviewed reason in
 `SETTINGS_WRITE_EXCEPTIONS`, and it keeps every settings path out of the core listing.
 [settingsWriters.test.ts](../../apps/server/src/mcp/toolkits/environment/settingsWriters.test.ts)
 pins every server file that writes settings directly, whatever capability its tool declares.

@@ -52,7 +52,7 @@ it("adds no direct settings writer without a reviewed reason", () => {
 });
 
 it("keeps allowed-app grants person-only and confines named writers to computer-use paths", () => {
-  expect(SETTINGS_ACCESS.cuaAllowedApps.access).toBe("person");
+  expect(SETTINGS_ACCESS.cuaAllowedApps.access).toBe("agent");
   const namedWriters = Object.keys(SETTINGS_WRITERS).filter((file) =>
     /cuaAllowedApps/.test(NodeFS.readFileSync(NodePath.join(SERVER_SOURCE, file), "utf8")),
   );

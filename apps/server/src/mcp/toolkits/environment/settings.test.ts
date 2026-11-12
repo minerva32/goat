@@ -3,6 +3,7 @@ import {
   EnvironmentAuthorizationError,
   EnvironmentId,
   ProviderInstanceId,
+  type ServerSettings,
   ThreadId,
   type AuthEnvironmentScope,
 } from "@goat/contracts";
@@ -14,6 +15,7 @@ import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Settings from "../../../serverSettings.ts";
+import { SECRET_REDACTED } from "../../../settingsSecrets.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -51,7 +53,12 @@ const clientScope = (
 });
 
 /** Runs a tool against real settings persistence and returns its result and the stored settings. */
-const call = (scope: McpInvocationContext.McpInvocationScope, name: string, args: unknown) =>
+const call = (
+  scope: McpInvocationContext.McpInvocationScope,
+  name: string,
+  args: unknown,
+  initialSettings?: Partial<ServerSettings>,
+) =>
   Effect.gen(function* () {
     const toolkit = yield* EnvironmentToolkit;
     const results = yield* toolkit
@@ -78,7 +85,7 @@ const call = (scope: McpInvocationContext.McpInvocationScope, name: string, args
                 capabilities: { repositoryIdentity: false },
               }),
             }),
-            Settings.layerTest(),
+            Settings.layerTest(initialSettings),
           ),
         ),
       ),
@@ -100,13 +107,48 @@ it.effect("changes agent settings through the normal settings service", () =>
   }),
 );
 
+it.effect("lets an agent change default access permissions", () =>
+  Effect.gen(function* () {
+    const { result, settings } = yield* call(threadScope, "goat_environment_settings_update", {
+      patch: { agentTerminalAccess: "operate", defaultRuntimeMode: "full-access" },
+    });
+    expect(settings.agentTerminalAccess).toBe("operate");
+    expect(settings.defaultRuntimeMode).toBe("full-access");
+    expect(result).toMatchObject({
+      settings: [
+        { key: "agentTerminalAccess", access: "agent" },
+        { key: "defaultRuntimeMode", access: "agent" },
+      ],
+    });
+  }),
+);
+
+it.effect("requires access:write when an outside client changes access permissions", () =>
+  Effect.gen(function* () {
+    const patch = { agentTerminalAccess: "operate" };
+    const denied = yield* call(
+      clientScope(["settings:write"], () => Effect.void),
+      "goat_environment_settings_update",
+      { patch },
+    );
+    expect(denied.result).toMatchObject({ code: "capability_denied" });
+    expect(denied.settings.agentTerminalAccess).toBe("off");
+    const granted = yield* call(
+      clientScope(["settings:write", "access:write"], () => Effect.void),
+      "goat_environment_settings_update",
+      { patch },
+    );
+    expect(granted.settings.agentTerminalAccess).toBe("operate");
+  }),
+);
+
 it.effect("lets an agent register a GOAT MCP server", () =>
   Effect.gen(function* () {
     const server = {
       transport: "stdio",
       command: "example-mcp",
       args: [],
-      env: { TOKEN: "example-secret" },
+      env: {},
     };
     const { result, settings } = yield* call(threadScope, "goat_environment_settings_update", {
       patch: { mcpServers: { example: server } },
@@ -115,22 +157,75 @@ it.effect("lets an agent register a GOAT MCP server", () =>
     expect(result).toMatchObject({
       settings: [{ key: "mcpServers", access: "agent" }],
     });
-    expect(JSON.stringify(result)).not.toContain("example-secret");
     const read = yield* call(threadScope, "goat_environment_settings_read", {
       keys: ["mcpServers"],
     });
-    expect(JSON.stringify(read.result)).not.toContain("example-secret");
+    expect(read.result).toMatchObject({ settings: [{ key: "mcpServers", access: "agent" }] });
+    const denied = yield* call(threadScope, "goat_environment_settings_update", {
+      patch: { mcpServers: { example: { ...server, env: { TOKEN: "example-secret" } } } },
+    });
+    expect(denied.result).toMatchObject({ code: "capability_denied" });
+    expect(denied.settings.mcpServers.example).toBeUndefined();
+  }),
+);
+
+it.effect("preserves a person's MCP token when an agent changes its server", () =>
+  Effect.gen(function* () {
+    const server = {
+      enabled: true,
+      transport: "stdio" as const,
+      command: "original-mcp",
+      args: [],
+      env: { TOKEN: "private-token" },
+    };
+    const initialSettings = { mcpServers: { example: server } };
+    for (const next of [
+      { ...server, command: "updated-mcp", env: {} },
+      { ...server, command: "updated-mcp", env: { TOKEN: "" } },
+      { ...server, command: "updated-mcp", env: { OTHER: "" } },
+    ]) {
+      const { result, settings } = yield* call(
+        threadScope,
+        "goat_environment_settings_update",
+        { patch: { mcpServers: { example: next } } },
+        initialSettings,
+      );
+      expect(result).toMatchObject({ code: "capability_denied" });
+      expect(settings.mcpServers.example).toMatchObject(server);
+    }
+    const removed = yield* call(
+      threadScope,
+      "goat_environment_settings_update",
+      { patch: { mcpServers: { example: null } } },
+      initialSettings,
+    );
+    expect(removed.result).toMatchObject({ code: "capability_denied" });
+    expect(removed.settings.mcpServers.example).toMatchObject(server);
+    const { result, settings } = yield* call(
+      threadScope,
+      "goat_environment_settings_update",
+      {
+        patch: {
+          mcpServers: {
+            example: { ...server, command: "updated-mcp", env: { TOKEN: SECRET_REDACTED } },
+          },
+        },
+      },
+      initialSettings,
+    );
+    expect(result).toMatchObject({ settings: [{ key: "mcpServers", access: "agent" }] });
+    expect(settings.mcpServers.example).toMatchObject({ command: "updated-mcp" });
   }),
 );
 
 it.effect("writes nothing when any key belongs to a person or another path", () =>
   Effect.gen(function* () {
     const person = yield* call(threadScope, "goat_environment_settings_update", {
-      patch: { branchNamePrefix: "goat/", defaultRuntimeMode: "full-access" },
+      patch: { branchNamePrefix: "goat/", cursorKeychainUsageEnabled: true },
     });
     expect(person.result).toMatchObject({ code: "capability_denied" });
     expect(String(person.result.message)).toContain(
-      "defaultRuntimeMode is changed only by a person",
+      "cursorKeychainUsageEnabled is changed only by a person",
     );
     expect(person.settings.branchNamePrefix).not.toBe("goat/");
 
@@ -153,23 +248,23 @@ it.effect("writes nothing when any key belongs to a person or another path", () 
   }),
 );
 
-it.effect("does not let an agent change allowed computer use apps", () =>
+it.effect("lets an agent change allowed computer use apps", () =>
   Effect.gen(function* () {
     const { result, settings } = yield* call(threadScope, "goat_environment_settings_update", {
       patch: { cuaAllowedApps: ["com.example.Editor"] },
     });
-    expect(result).toMatchObject({ code: "capability_denied" });
-    expect(settings.cuaAllowedApps).toEqual([]);
+    expect(result).toMatchObject({ settings: [{ key: "cuaAllowedApps", access: "agent" }] });
+    expect(settings.cuaAllowedApps).toEqual(["com.example.Editor"]);
   }),
 );
 
-it.effect("does not let an agent change the managed app deny list", () =>
+it.effect("lets an agent change the app deny list", () =>
   Effect.gen(function* () {
     const { result, settings } = yield* call(threadScope, "goat_environment_settings_update", {
       patch: { cuaDeniedApps: ["com.example.Blocked"] },
     });
-    expect(result).toMatchObject({ code: "capability_denied" });
-    expect(settings.cuaDeniedApps).toEqual([]);
+    expect(result).toMatchObject({ settings: [{ key: "cuaDeniedApps", access: "agent" }] });
+    expect(settings.cuaDeniedApps).toEqual(["com.example.Blocked"]);
   }),
 );
 

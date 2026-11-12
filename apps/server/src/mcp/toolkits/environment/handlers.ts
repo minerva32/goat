@@ -15,6 +15,7 @@ import * as AutomationHold from "../../../automationHold.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as Settings from "../../../serverSettings.ts";
+import { SECRET_REDACTED } from "../../../settingsSecrets.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { readCaller, unavailable } from "../../threadAccess.ts";
@@ -160,10 +161,29 @@ function refusedKeys(patch: Readonly<Record<string, unknown>>) {
 
 /** settingsPath of the error the commit-time grant check raises, told apart from real failures. */
 const CLIENT_REVOKED = "mcp:settings-update-client-revoked";
-const clientDenied = () =>
+const MCP_SECRET_POLICY = "mcp:settings-update-mcp-secret-policy";
+const credentialDenied = () =>
   new OrchestratorMcpFailure({
     code: "capability_denied",
-    message: "Changing settings needs a full-access client with live settings:write access.",
+    message: "Nothing was changed. Enter MCP environment variables and headers in Settings.",
+  });
+const changesMcpCredentials = (current: ServerSettings, patch: ServerSettingsPatch) =>
+  Object.entries(patch.mcpServers ?? {}).some(([name, next]) => {
+    const previous = current.mcpServers[name];
+    if (previous === undefined) return false;
+    const previousFields = previous.transport === "stdio" ? previous.env : previous.headers;
+    if (next === null) return Object.values(previousFields).some((value) => value !== "");
+    const nextFields = next.transport === "stdio" ? next.env : next.headers;
+    return Object.entries(previousFields).some(
+      ([field, value]) => value !== "" && nextFields[field] !== SECRET_REDACTED,
+    );
+  });
+const clientDenied = (accessPolicy = false) =>
+  new OrchestratorMcpFailure({
+    code: "capability_denied",
+    message: accessPolicy
+      ? "Changing access policies needs a full-access client with live settings:write and access:write access."
+      : "Changing settings needs a full-access client with live settings:write access.",
   });
 
 export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
@@ -271,15 +291,34 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
         const decoded = yield* decodePatch(patch, { onExcessProperty: "error" }).pipe(
           Effect.mapError((error) => invalid(`Nothing was changed. ${error.message}`)),
         );
+        const mcpCredentials = Object.values(decoded.mcpServers ?? {}).some((server) =>
+          server === null
+            ? false
+            : Object.values(server.transport === "stdio" ? server.env : server.headers).some(
+                (value) => value !== "" && value !== SECRET_REDACTED,
+              ),
+        );
+        if (mcpCredentials) return yield* credentialDenied();
+        const accessPolicy = [
+          "agentWorkspaceAccess",
+          "agentTerminalAccess",
+          "projectSettingsOverrides",
+        ].some((key) => Object.hasOwn(decoded, key));
         const scope = yield* McpInvocationContext.McpInvocationContext;
         // A thread caller is bounded by its own modes and profile; a client by its live grant.
         let authorizeAtCommit: Effect.Effect<void, ServerSettingsError> | undefined;
         if (scope.thread === undefined) {
           const reauthorize = scope.reauthorize;
-          if (!scope.grantedScopes?.includes("settings:write") || reauthorize === undefined)
-            return yield* clientDenied();
-          yield* reauthorize(["settings:write"]).pipe(Effect.mapError(clientDenied));
-          authorizeAtCommit = reauthorize(["settings:write"]).pipe(
+          const scopes = accessPolicy
+            ? (["settings:write", "access:write"] as const)
+            : (["settings:write"] as const);
+          if (
+            !scopes.every((grant) => scope.grantedScopes?.includes(grant)) ||
+            reauthorize === undefined
+          )
+            return yield* clientDenied(accessPolicy);
+          yield* reauthorize(scopes).pipe(Effect.mapError(() => clientDenied(accessPolicy)));
+          authorizeAtCommit = reauthorize(scopes).pipe(
             Effect.mapError(
               () =>
                 new ServerSettingsError({
@@ -294,13 +333,28 @@ export const layer = McpToolAccess.toLayer(EnvironmentToolkit, {
           // The turn may have ended, or the thread's modes changed, while this waited for the lock.
           yield* check;
           const { settings } = yield* access;
-          const next = yield* settings
-            .updateSettings(decoded, authorizeAtCommit)
-            .pipe(
-              Effect.mapError((error) =>
-                error.settingsPath === CLIENT_REVOKED ? clientDenied() : unavailable(),
-              ),
-            );
+          const patchFor = (current: ServerSettings) =>
+            changesMcpCredentials(current, decoded)
+              ? Effect.fail(
+                  new ServerSettingsError({
+                    settingsPath: MCP_SECRET_POLICY,
+                    operation: "normalize",
+                  }),
+                )
+              : Effect.succeed(decoded);
+          const write = accessPolicy
+            ? settings.updateAgentWorkspaceTerminalPolicyAsAgent?.(patchFor, authorizeAtCommit)
+            : settings.updateSettingsWith(patchFor, authorizeAtCommit);
+          if (write === undefined) return yield* unavailable();
+          const next = yield* write.pipe(
+            Effect.mapError((error) =>
+              error.settingsPath === CLIENT_REVOKED
+                ? clientDenied(accessPolicy)
+                : error.settingsPath === MCP_SECRET_POLICY
+                  ? credentialDenied()
+                  : unavailable(),
+            ),
+          );
           const visible = yield* visibleSettings(next);
           return {
             settings: (keys as ReadonlyArray<SettingsKey>).map((key) =>

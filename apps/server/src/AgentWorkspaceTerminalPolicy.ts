@@ -96,7 +96,7 @@ type Transact = <E, R>(
   beforeCommit?: Effect.Effect<void, E | ServerSettingsError, R>,
 ) => Effect.Effect<ServerSettings, E | ServerSettingsError, R>;
 
-type SettingsMethods = {
+export type SettingsMethods = {
   readonly updateSettings: (
     patch: ServerSettingsPatch,
     authorizeAtCommit?: Effect.Effect<void, ServerSettingsError>,
@@ -109,6 +109,10 @@ type SettingsMethods = {
     patch: ServerSettingsPatch,
     actorSessionId: AuthSessionId,
     agentTerminalBinding?: AgentTerminalBinding,
+    authorizeAtCommit?: Effect.Effect<void, ServerSettingsError>,
+  ) => Effect.Effect<ServerSettings, ServerSettingsError>;
+  readonly updateAgentWorkspaceTerminalPolicyAsAgent: (
+    patchFor: (current: ServerSettings) => Effect.Effect<ServerSettingsPatch, ServerSettingsError>,
     authorizeAtCommit?: Effect.Effect<void, ServerSettingsError>,
   ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 };
@@ -142,6 +146,24 @@ export const agentWorkspaceTerminalSettingsMethods = (
           const patch = yield* patchFor(current);
           yield* rejectReserved(patch, settingsPath);
           yield* rejectAgentWorkspaceTerminalPolicyChange(current, patch, settingsPath);
+          return yield* stamp(current, applyServerSettingsPatch(current, patch));
+        }),
+      [],
+      authorizeAtCommit,
+    ),
+  updateAgentWorkspaceTerminalPolicyAsAgent: (patchFor, authorizeAtCommit) =>
+    transact(
+      (current) =>
+        Effect.gen(function* () {
+          if (authorizeAtCommit) yield* authorizeAtCommit;
+          const patch = yield* patchFor(current);
+          yield* rejectReserved(patch, settingsPath);
+          if (
+            patch.providerInstances !== undefined ||
+            Object.hasOwn(patch, "providers") ||
+            patch.usageLimitSources !== undefined
+          )
+            return yield* new ServerSettingsError({ settingsPath, operation: "normalize" });
           return yield* stamp(current, applyServerSettingsPatch(current, patch));
         }),
       [],
