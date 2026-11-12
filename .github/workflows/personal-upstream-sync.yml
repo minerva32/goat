@@ -1,0 +1,31 @@
+name: Sync personal GOAT permissions
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: personal-agent-settings-sync
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: github.repository == 'minerva32/goat'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: agent-settings
+          fetch-depth: 0
+      - name: Merge upstream dev into agent-settings
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/goat-si/goat.git
+          git fetch upstream dev
+          git merge --no-edit upstream/dev
+          git push origin HEAD:agent-settings
