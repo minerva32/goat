@@ -59,7 +59,7 @@ output_dir="$state_dir/release-$version"
 runtime_dir="$output_dir/ssh-runtime"
 mkdir -p "$runtime_dir"
 remote_archive="goat-build/personal-runtime-$version/goat-$version-linux-arm64.tar.gz"
-ssh -o BatchMode=yes oci-hermes-home "bash ~/goat-build/goat-src/scripts/personal-linux-runtime.sh '$source_sha' '$version'"
+ssh -o BatchMode=yes oci-hermes-home "cd ~/goat-build/goat-src && git fetch origin agent-settings && git checkout agent-settings && git merge --ff-only origin/agent-settings && bash scripts/personal-linux-runtime.sh '$source_sha' '$version'"
 scp -q "oci-hermes-home:$remote_archive" "$runtime_dir/"
 scp -q "oci-hermes-home:$remote_archive.sha256" "$runtime_dir/"
 (cd "$runtime_dir" && shasum -a 256 -c "goat-$version-linux-arm64.tar.gz.sha256")
