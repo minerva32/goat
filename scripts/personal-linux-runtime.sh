@@ -19,7 +19,8 @@ git merge --ff-only origin/agent-settings
 
 archive_dir="$HOME/goat-build/personal-runtime-$version"
 archive="$archive_dir/goat-$version-linux-arm64.tar.gz"
-if [[ -s "$archive" && -s "$archive.sha256" ]]; then
+if [[ -s "$archive" && -s "$archive.sha256" && -f "$archive_dir/source-sha" &&
+      "$(cat "$archive_dir/source-sha")" == "$source_sha" ]]; then
   (cd "$archive_dir" && sha256sum --check "${archive##*/}.sha256")
   printf '%s\n' "$archive"
   exit 0
@@ -39,4 +40,5 @@ node scripts/build-cli-archive.ts --platform linux --arch arm64 --version "$vers
 [[ -s "$archive" ]] || { printf 'Linux runtime archive is missing.\n' >&2; exit 1; }
 (cd "$archive_dir" && sha256sum "${archive##*/}" > "${archive##*/}.sha256")
 (cd "$archive_dir" && sha256sum --check "${archive##*/}.sha256")
+printf '%s\n' "$source_sha" > "$archive_dir/source-sha"
 printf '%s\n' "$archive"
