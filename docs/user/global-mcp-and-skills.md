@@ -15,6 +15,9 @@ environment: a command to run (stdio) or an HTTPS address (HTTP). Put tokens in
 environment variables or headers; GOAT stores those values as secrets and shows
 them masked. Don't put secrets in the address itself.
 
+Full-access agents with `settings:write` may also add or change these servers
+through `environment.settings_update`. New threads pick up the change.
+
 Servers apply to threads started after you add them. Agents see each one as
 `<name>_goat`.
 

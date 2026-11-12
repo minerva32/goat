@@ -22,7 +22,7 @@ const HOLDS_SECRETS = "It holds credentials; a person enters them in Settings.";
 
 export const SETTINGS_ACCESS = {
   disabledGlobalSkills: agent,
-  mcpServers: person("It runs commands and holds credentials; a person configures it."),
+  mcpServers: agent,
   speech: person("A person controls local speech model configuration."),
   setModelFavorites: agent,
   setModelsHidden: agent,

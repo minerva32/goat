@@ -35,13 +35,15 @@ describe("settings access", () => {
     );
   });
 
-  it("never lets agents change or read a setting that holds a credential", () => {
+  it("keeps credential settings person-controlled except delegated MCP servers", () => {
     const secretKeys = keys.filter(
       (key) =>
         key !== "memoryOwnerSourceReadPolicy" && holdsSecret(ServerSettingsPatch.fields[key].ast),
     );
     expect(secretKeys.length).toBeGreaterThan(0);
-    for (const key of secretKeys) expect(SETTINGS_ACCESS[key].access, key).not.toBe("agent");
+    for (const key of secretKeys)
+      if (key !== "mcpServers") expect(SETTINGS_ACCESS[key].access, key).not.toBe("agent");
+    expect(SETTINGS_ACCESS.mcpServers.access).toBe("agent");
   });
 
   it("needs no grant beyond settings:write for any agent setting", () => {

@@ -100,6 +100,29 @@ it.effect("changes agent settings through the normal settings service", () =>
   }),
 );
 
+it.effect("lets an agent register a GOAT MCP server", () =>
+  Effect.gen(function* () {
+    const server = {
+      transport: "stdio",
+      command: "example-mcp",
+      args: [],
+      env: { TOKEN: "example-secret" },
+    };
+    const { result, settings } = yield* call(threadScope, "goat_environment_settings_update", {
+      patch: { mcpServers: { example: server } },
+    });
+    expect(settings.mcpServers.example).toMatchObject(server);
+    expect(result).toMatchObject({
+      settings: [{ key: "mcpServers", access: "agent" }],
+    });
+    expect(JSON.stringify(result)).not.toContain("example-secret");
+    const read = yield* call(threadScope, "goat_environment_settings_read", {
+      keys: ["mcpServers"],
+    });
+    expect(JSON.stringify(read.result)).not.toContain("example-secret");
+  }),
+);
+
 it.effect("writes nothing when any key belongs to a person or another path", () =>
   Effect.gen(function* () {
     const person = yield* call(threadScope, "goat_environment_settings_update", {
