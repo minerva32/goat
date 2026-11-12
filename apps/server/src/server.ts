@@ -180,6 +180,7 @@ import * as LinuxHelperReport from "./cua/linuxHelperHost/LinuxHelperReport.ts";
 import * as ComputerUseLeases from "./cua/ComputerUseLeases.ts";
 import * as ComputerUseTurnEnd from "./cua/ComputerUseTurnEnd.ts";
 import * as RunStartHoldReactor from "./orchestration-v2/goat/RunStartHoldReactor.ts";
+import * as DisplayAwakeReactor from "./orchestration-v2/goat/DisplayAwakeReactor.ts";
 import * as ComputerUseAgentConnections from "./cua/ComputerUseAgentConnections.ts";
 import * as ComputerUseLeaseRoute from "./cua/ComputerUseLeaseRoute.ts";
 import * as DesktopAppUpdate from "./desktopUpdate/DesktopAppUpdate.ts";
@@ -752,6 +753,10 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   layerIdleCompactionWorker,
   ComputerUseTurnEnd.layer,
   RunStartHoldReactor.layer.pipe(Layer.provide(RuntimeLayer.layerEventSink)),
+  DisplayAwakeReactor.layer.pipe(
+    Layer.provide(RuntimeLayer.layerEventSink),
+    Layer.provide(ProcessRunner.layer),
+  ),
   StorageCleanupLayer.layer,
   WorktreeCheckoutHealth.layer.pipe(Layer.provide(ProcessRunner.layer)),
   DatabaseStorage.layer.pipe(
