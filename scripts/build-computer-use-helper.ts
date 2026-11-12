@@ -52,7 +52,7 @@ export const AD_HOC_WARNING = [
 ].join("\n");
 
 export type SigningChoice =
-  | { readonly identity: string; readonly team: string }
+  | { readonly identity: string; readonly team: string; readonly appleDevelopment?: true }
   | { readonly identity: "-"; readonly warning: string }
   | { readonly error: string };
 
@@ -69,6 +69,7 @@ export function chooseSigningIdentity(input: {
   readonly adHoc: boolean;
   readonly unsignedPackage?: boolean;
   readonly findIdentityOutput: string;
+  readonly appleDevelopmentTeam?: string;
 }): SigningChoice {
   const explicit = input.explicit?.trim() || undefined;
   if (input.adHoc) {
@@ -81,24 +82,37 @@ export function chooseSigningIdentity(input: {
   if (explicit === "-")
     return { error: "Ad-hoc signing needs --ad-hoc (dev only); --identity - is not accepted." };
   // Each valid identity line: index, SHA-1, quoted name.
-  const developerIds = [
+  const identities = [
     ...input.findIdentityOutput.matchAll(
-      /^\s*\d+\)\s+([0-9A-F]{40})\s+"(Developer ID Application: [^"]+)"/gmu,
+      /^\s*\d+\)\s+([0-9A-F]{40})\s+"((?:Developer ID Application|Apple Development): [^"]+)"/gmu,
     ),
   ].map(([, hash, name]) => ({ hash: hash ?? "", name: name ?? "" }));
   const match =
     explicit === undefined
-      ? developerIds[0]
-      : developerIds.find(({ hash, name }) => explicit === name || explicit.toUpperCase() === hash);
-  const team = match?.name.match(/\(([A-Z0-9]{10})\)$/u)?.[1];
-  if (match && team) return { identity: explicit ?? match.name, team };
+      ? identities.find(({ name }) => name.startsWith("Developer ID Application:"))
+      : identities.find(({ hash, name }) => explicit === name || explicit.toUpperCase() === hash);
+  const appleDevelopment = match?.name.startsWith("Apple Development:") === true;
+  const team = appleDevelopment
+    ? input.appleDevelopmentTeam
+    : match?.name.match(/\(([A-Z0-9]{10})\)$/u)?.[1];
+  if (match && team && /^[A-Z0-9]{10}$/u.test(team))
+    return {
+      identity: explicit ?? match.name,
+      team,
+      ...(appleDevelopment ? { appleDevelopment: true as const } : {}),
+    };
+  if (match && appleDevelopment)
+    return {
+      error:
+        "Apple Development signing needs GOAT_CLI_MAC_SIGN_TEAM set to the certificate's actual subject OU.",
+    };
   return {
     error: [
       explicit === undefined
         ? "No usable Developer ID Application identity: `security find-identity -v -p codesigning` lists none."
         : "The identity " +
           explicit +
-          " is not a Developer ID Application identity in this keychain.",
+          " is not a Developer ID Application or Apple Development identity in this keychain.",
       KEYCHAIN_REMEDY,
       ...(input.channel === "dev"
         ? [
@@ -113,11 +127,18 @@ export function chooseSigningIdentity(input: {
  * Bundle id plus Developer ID team: what every rebuild by the same team satisfies, so macOS
  * keeps the helper's grants across rebuilds instead of pinning them to one cdhash.
  */
-export const helperDesignatedRequirement = (bundleId: string, team: string) =>
+export const helperDesignatedRequirement = (
+  bundleId: string,
+  team: string,
+  appleDevelopment = false,
+) =>
   '=designated => identifier "' +
   bundleId +
-  '" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists' +
-  " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists" +
+  '" and anchor apple generic' +
+  (appleDevelopment
+    ? ""
+    : " and certificate 1[field.1.2.840.113635.100.6.2.6] exists" +
+      " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists") +
   ' and certificate leaf[subject.OU] = "' +
   team +
   '"';
@@ -176,6 +197,9 @@ export const resolveSigningIdentity = Effect.fn("resolveSigningIdentity")(functi
     adHoc: input.adHoc,
     ...(input.unsignedPackage ? { unsignedPackage: true } : {}),
     findIdentityOutput: identities.stdout,
+    ...(process.env.GOAT_CLI_MAC_SIGN_TEAM
+      ? { appleDevelopmentTeam: process.env.GOAT_CLI_MAC_SIGN_TEAM }
+      : {}),
   });
   if ("error" in choice) return yield* fail(choice.error);
   if ("warning" in choice) yield* Effect.logWarning(choice.warning);
@@ -202,7 +226,7 @@ export const signComputerUseHelper = Effect.fn("signComputerUseHelper")(function
     "--force",
     "--options",
     "runtime",
-    ...("team" in choice ? ["--timestamp"] : []),
+    ...("team" in choice && !choice.appleDevelopment ? ["--timestamp"] : []),
     "--sign",
     choice.identity,
   ];
@@ -215,7 +239,14 @@ export const signComputerUseHelper = Effect.fn("signComputerUseHelper")(function
     "--entitlements",
     input.entitlements,
     ...("team" in choice
-      ? ["--requirements", helperDesignatedRequirement(input.bundleId, choice.team)]
+      ? [
+          "--requirements",
+          helperDesignatedRequirement(
+            input.bundleId,
+            choice.team,
+            choice.appleDevelopment === true,
+          ),
+        ]
       : []),
   ]);
   yield* requireReleaseCommand(runner, "codesign", [

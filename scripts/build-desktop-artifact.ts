@@ -2951,10 +2951,13 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
   const env = yield* Config.all({
     updateRepository: Config.String("GOAT_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
     enabled: Config.Boolean("GOAT_DESKTOP_UPDATE_FEED_ENABLED").pipe(Config.withDefault(false)),
+    personalFeed: Config.Boolean("GOAT_DESKTOP_PERSONAL_UPDATE_FEED").pipe(
+      Config.withDefault(false),
+    ),
   });
   if (!env.enabled) return undefined;
   const rawRepo = Option.getOrUndefined(env.updateRepository)?.trim();
-  if (rawRepo !== DESKTOP_UPDATE_REPOSITORY) return undefined;
+  if (!rawRepo || (rawRepo !== DESKTOP_UPDATE_REPOSITORY && !env.personalFeed)) return undefined;
 
   const [owner, repo, ...rest] = rawRepo.split("/");
   if (!owner || !repo || rest.length > 0) return undefined;

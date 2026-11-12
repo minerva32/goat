@@ -171,17 +171,21 @@ describe("build-computer-use-helper", () => {
       );
   });
 
-  it("accepts an explicit identity only when it is a Developer ID in this keychain", () => {
-    // An explicit certificate must still be a Developer ID from this keychain.
+  it("accepts an explicit Apple Development identity for a locally signed personal build", () => {
     for (const channel of ["stable", "dev"] as const)
-      assert.property(
+      assert.deepEqual(
         chooseSigningIdentity({
           channel,
           explicit: "Apple Development: Someone (QQ4ZRC9P5J)",
           adHoc: false,
           findIdentityOutput: FIND_IDENTITY,
+          appleDevelopmentTeam: "LOCALTEAM1",
         }),
-        "error",
+        {
+          identity: "Apple Development: Someone (QQ4ZRC9P5J)",
+          team: "LOCALTEAM1",
+          appleDevelopment: true,
+        },
       );
     assert.deepEqual(
       chooseSigningIdentity({
@@ -202,6 +206,13 @@ describe("build-computer-use-helper", () => {
     assert.match(requirement, /^=designated => identifier "si\.goat\.desktop\.dev\.computer-use" /);
     assert.include(requirement, 'certificate leaf[subject.OU] = "U9ATA49N28"');
     assert.notInclude(requirement, "cdhash");
+    const localRequirement = helperDesignatedRequirement(
+      "si.goat.desktop.computer-use",
+      "QQ4ZRC9P5J",
+      true,
+    );
+    assert.include(localRequirement, 'certificate leaf[subject.OU] = "QQ4ZRC9P5J"');
+    assert.notInclude(localRequirement, "1.2.840.113635.100.6.1.13");
   });
 
   it.effect("reports a failed keychain lookup with its own error instead of 'no identity'", () =>
@@ -240,6 +251,26 @@ describe("build-computer-use-helper", () => {
         helperDesignatedRequirement(SIGN_INPUT.bundleId, "U9ATA49N28"),
       );
       assert.include(calls[2] ?? [], "--verify");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("uses the Apple team requirement for a personal development-signed helper", () =>
+    Effect.gen(function* () {
+      const { runner, calls } = fakeRunner(() => ({}));
+      yield* signComputerUseHelper(runner, {
+        ...SIGN_INPUT,
+        choice: {
+          identity: "Apple Development: Someone (QQ4ZRC9P5J)",
+          team: "LOCALTEAM1",
+          appleDevelopment: true,
+        },
+      });
+      const bundleSign = calls[1] ?? [];
+      assert.notInclude(bundleSign, "--timestamp");
+      assert.equal(
+        bundleSign[bundleSign.indexOf("--requirements") + 1],
+        helperDesignatedRequirement(SIGN_INPUT.bundleId, "LOCALTEAM1", true),
+      );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
