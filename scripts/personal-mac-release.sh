@@ -54,7 +54,9 @@ export GOAT_DESKTOP_UPDATE_FEED_ENABLED=true
 export GOAT_DESKTOP_PERSONAL_UPDATE_FEED=true
 export GOAT_DESKTOP_UPDATE_REPOSITORY=minerva32/goat
 
-./node_modules/.bin/vp run check:changed
+if [[ "${GOAT_PERSONAL_UPDATE_SKIP_CHECK:-0}" != 1 ]]; then
+  ./node_modules/.bin/vp run check:changed
+fi
 output_dir="$state_dir/release-$version"
 runtime_dir="$output_dir/ssh-runtime"
 mkdir -p "$runtime_dir"
@@ -63,9 +65,14 @@ ssh -o BatchMode=yes oci-hermes-home "cd ~/goat-build/goat-src && git fetch orig
 scp -q "oci-hermes-home:$remote_archive" "$runtime_dir/"
 scp -q "oci-hermes-home:$remote_archive.sha256" "$runtime_dir/"
 (cd "$runtime_dir" && shasum -a 256 -c "goat-$version-linux-arm64.tar.gz.sha256")
+trap 'git restore -- apps/desktop/src/preview/AnnotationStyles.generated.ts' EXIT
 node scripts/build-desktop-artifact.ts --platform mac --target zip --arch arm64 \
   --signed --build-version "$version" --output-dir "$output_dir" \
   --ssh-runtime-archive-dir "$runtime_dir"
+# The web build regenerates this tracked CSS snapshot from the installed Tailwind dependency.
+# The checkout was clean before the build; restore only this generated file afterward.
+git restore -- apps/desktop/src/preview/AnnotationStyles.generated.ts
+trap - EXIT
 
 zip_file="$output_dir/GOAT-$version-arm64.zip"
 manifest="$output_dir/latest-mac.yml"
