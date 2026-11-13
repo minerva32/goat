@@ -15,7 +15,7 @@ vi.mock("react-native-safe-area-context", () => ({
 vi.mock("react-native", () => ({
   Platform: nativePlatform,
   Easing: { linear: (value: number) => value },
-  StyleSheet: { absoluteFill: {} },
+  StyleSheet: { absoluteFill: {}, hairlineWidth: 1 },
   useAnimatedValue: () => ({ setValue: () => {}, interpolate: () => 0 }),
   Animated: {
     View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
@@ -46,12 +46,14 @@ vi.mock("react-native", () => ({
     children,
     className,
     style,
+    accessibilityLabel,
   }: {
     children?: ReactNode;
+    accessibilityLabel?: string;
     className?: string;
     style?: React.CSSProperties;
   }) => (
-    <div className={className} style={style}>
+    <div className={className} style={style} aria-label={accessibilityLabel}>
       {children}
     </div>
   ),
@@ -100,6 +102,15 @@ vi.mock("react-native", () => ({
     >
       {children}
     </button>
+  ),
+}));
+// The row menu is native; these tests do not open it.
+vi.mock("./MobileBotRowMenu", () => ({
+  MobileBotRowMenu: (props: { label: string; row?: ReactNode }) => (
+    <>
+      {props.row}
+      <button aria-label={props.label} />
+    </>
   ),
 }));
 const state = vi.hoisted(() => ({
@@ -179,7 +190,7 @@ vi.mock("../../state/channels", () => ({
     listBotArtifacts: () => "artifacts",
     readBotArtifact: {},
     listTasks: () => "computer",
-    updateTaskView: {},
+    updateTaskView: { permissionAtom: () => "permission" },
     retryTask: { label: "retry", permissionAtom: () => "permission", run: state.retry },
   },
 }));
@@ -205,7 +216,14 @@ vi.mock("../../state/environments", () => ({
         "env",
         {
           serverConfig: {
-            environment: { capabilities: { goatBotTaskThreads: true, goatBotTaskRetry: true } },
+            environment: {
+              capabilities: {
+                goatBotTaskThreads: true,
+                goatBotTaskRetry: true,
+                goatBotChildWork: true,
+                goatBotMembers: true,
+              },
+            },
           },
         },
       ],
@@ -316,15 +334,16 @@ it("distinguishes task and routine loading, empty, offline, and retry states", a
   reset();
   await render();
   await press("Work");
-  expect(container.textContent).toContain("Loading tasks");
+  expect(container.querySelector('[aria-label="Loading tasks…"]')).not.toBeNull();
   Object.assign(state.task, { isPending: false, isSuccess: true, data: { rows: [] } });
   await render();
-  expect(container.textContent).toContain("No tasks yet");
+  expect(container.textContent).toContain("No recent tasks");
   Object.assign(state.task, { error: "failed", isSuccess: false });
   await render();
   // The last read was empty, but a failed read says nothing about whether tasks exist now.
-  expect(container.textContent).not.toContain("No tasks yet");
-  await press("Couldn't load tasks");
+  expect(container.textContent).not.toContain("No recent tasks");
+  expect(container.textContent).toContain("Couldn't load GOAT Bot's tasks.");
+  await press("Try again");
   expect(state.task.refresh).toHaveBeenCalledOnce();
   // Routines sit on Home with machines and work.
   expect(container.textContent).toContain("Loading routines");
@@ -357,11 +376,11 @@ it("lists the tasks the chat shows while the work list loads or after it failed"
   };
   await render(undefined, undefined, [], [card]);
   await press("Work");
-  expect(container.textContent).toContain("Loading tasks");
+  expect(container.querySelector('[aria-label="Loading tasks…"]')).not.toBeNull();
   expect(container.textContent).toContain("Earlier in chat");
   Object.assign(state.task, { isPending: false, error: "failed" });
   await render(undefined, undefined, [], [card]);
-  expect(container.textContent).toContain("Couldn't load tasks");
+  expect(container.textContent).toContain("Couldn't load GOAT Bot's tasks.");
   expect(container.textContent).toContain("Earlier in chat");
 });
 
@@ -397,7 +416,8 @@ it("keeps known tasks in view while they refresh and after a refresh fails", asy
   Object.assign(state.task, { isPending: false, isSuccess: false, error: "failed" });
   await render();
   expect(container.textContent).toContain("Known task");
-  await press("Couldn't load tasks");
+  expect(container.textContent).toContain("Couldn't load GOAT Bot's tasks.");
+  await press("Try again");
   expect(state.task.refresh).toHaveBeenCalledOnce();
 });
 
@@ -461,7 +481,10 @@ it("distinguishes task thread loading, missing, offline, and retry states", asyn
   expect(container.textContent).toContain("Loading task");
   Object.assign(state.task, { isPending: false, isSuccess: true, data: { rows: [] } });
   await render(ChannelTaskId.make("task"));
-  expect(container.textContent).toContain("Task not found");
+  // A settled list without the task: it is older work, whose status and actions are in Home.
+  expect(container.textContent).toContain(
+    "Status and actions for older work are in GOAT Bot's Home.",
+  );
   Object.assign(state.task, { error: "failed", isSuccess: false });
   await render(ChannelTaskId.make("task"));
   await press("Couldn't load task");
@@ -471,15 +494,25 @@ it("distinguishes task thread loading, missing, offline, and retry states", asyn
   expect(container.textContent).toContain("offline");
 });
 
-it("shows task details in the header when a card is available", async () => {
+it("shows task details in the header when a card is available for a listed task", async () => {
   reset();
+  const at = "2026-11-04T10:00:00.000Z";
+  const row = decodeRow({
+    kind: "task",
+    task: { taskId: "task", title: "Review", status: "running", updatedAt: at },
+    view: { taskId: "task", pinnedAt: null, doneAt: null, readThrough: null },
+    lastActivityAt: at,
+    unread: false,
+    mainMessagesSinceQuiet: 0,
+  });
+  Object.assign(state.task, { isPending: false, isSuccess: true, data: { rows: [row] } });
   await render(ChannelTaskId.make("task"));
   expect(container.textContent).not.toContain("Task summary");
   await render(ChannelTaskId.make("task"), <span>Task summary</span>);
   expect(container.textContent).toContain("Task summary");
 });
 
-it("names a task the server no longer lists from its conversation card, not as missing", async () => {
+it("names a task the server no longer lists from its conversation card, as older work", async () => {
   reset();
   Object.assign(state.task, { isPending: false, isSuccess: true, data: { rows: [] } });
   if (!root) root = createRoot(container);
@@ -488,16 +521,30 @@ it("names a task the server no longer lists from its conversation card, not as m
       <WorkWithChip
         visible
         taskId={ChannelTaskId.make("task-old")}
-        taskCardInfo={{ title: "Summarize the README", statusLabel: "Needs your input" }}
-        taskCard={<span>Connect mac-mini to open</span>}
+        taskCardInfo={{
+          key: "task-old",
+          revision: 1,
+          updatedAt: "2026-11-11T02:00:00.000Z",
+          title: "Summarize the README",
+          statusLabel: "Needs your input",
+          tone: "attention",
+          sourceLabel: null,
+          summary: null,
+          attentionLabel: null,
+          pullRequests: [],
+          target: { kind: "none", label: "No thread" },
+        }}
+        taskCard={<span>Needs your input</span>}
         onOpenTask={() => {}}
         onOpenThread={state.openThread}
       />,
     ),
   );
   expect(container.textContent).toContain("Summarize the README");
-  expect(container.textContent).toContain("Needs your input");
-  expect(container.textContent).toContain("Connect mac-mini to open");
+  expect(container.textContent).toContain(
+    "Status and actions for older work are in GOAT Bot's Home.",
+  );
+  expect(container.textContent).not.toContain("Needs your input");
   expect(container.textContent).not.toContain("Task not found");
 });
 
@@ -625,7 +672,7 @@ it("opens the coding thread a task launched, such as a bot turn's", async () => 
   expect(state.openThread).toHaveBeenCalledWith({ environmentId: "env", id: "thread:child" });
 });
 
-it("lists a turn's coding thread under it in Tasks and opens it", async () => {
+it("keeps a turn's coding thread out of the Work card", async () => {
   reset();
   state.openThread.mockClear();
   const at = "2026-11-07T10:00:00.000Z";
@@ -652,9 +699,8 @@ it("lists a turn's coding thread under it in Tasks and opens it", async () => {
   await render();
   await press("Work");
   expect(container.textContent).toContain("Start one task");
-  await press("Echo question probe");
-  expect(state.openThread).toHaveBeenCalledWith({ environmentId: "env", id: "thread:child" });
   expect(container.textContent).not.toContain("Echo question probe");
+  expect(state.openThread).not.toHaveBeenCalled();
 });
 
 it("points to the chat from Tasks when the bot asked a question there", async () => {
@@ -663,7 +709,7 @@ it("points to the chat from Tasks when the bot asked a question there", async ()
   await render(undefined, undefined, ["turn-1"]);
   await press("Work");
   expect(container.textContent).toContain("GOAT Bot is waiting for your answer in the chat");
-  expect(container.textContent).toContain("No tasks yet");
+  expect(container.textContent).toContain("No recent tasks");
   await press("Open the chat");
   expect(container.textContent).not.toContain("waiting for your answer in the chat");
 });
