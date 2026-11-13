@@ -85,6 +85,8 @@ export const SETTINGS_ACCESS = {
   fleet: path("fallback_chain.set"),
   goatclaw: agent,
   hub: person("Memory hub changes require a dedicated consent transition in Settings."),
+  hubRelayWarningDeviceGbPerDay: agent,
+  hubRelayWarningHubGbPerDay: agent,
   pen: agent,
   guestSharingEnabled: agent,
   backgroundActivity: agent,
