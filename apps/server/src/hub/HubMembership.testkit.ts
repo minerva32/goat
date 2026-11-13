@@ -133,6 +133,10 @@ export interface Fixture {
   readonly linkStatus?: "forbidden" | "failed";
   /** Home `ocx link revoke` refuses, so the link stays. */
   readonly revokeFails?: boolean;
+  /** Home `ocx link routes` answers; absent answers as an OpenCodex without the command. */
+  readonly routes?: (args: ReadonlyArray<string>) => OcxOutput;
+  /** Home `ocx link routes` as a run that can fail or never finish; overrides routes. */
+  readonly routesRun?: (args: ReadonlyArray<string>) => Effect.Effect<OcxOutput, HubOcxError>;
 }
 
 export const setup = Effect.fn("HubMembershipTest.setup")(function* (fixture: Fixture = {}) {
@@ -143,6 +147,8 @@ export const setup = Effect.fn("HubMembershipTest.setup")(function* (fixture: Fi
   let failuresLeft = fixture.addFailures ?? 0;
   let revoked = false;
   let direct = fixture.direct ?? true;
+  // Breaks later link-status reads, after a decision was filed against a working one.
+  let statusBroken: "unstartable" | "missing" | "unreachable" | "failed" | "child" | undefined;
   const json = (value: unknown): OcxOutput => ({ code: 0, stdout: JSON.stringify(value) });
   const home = (args: ReadonlyArray<string>): Effect.Effect<OcxOutput, HubOcxError> => {
     calls.push(`home ${args.join(" ")}`);
@@ -152,6 +158,22 @@ export const setup = Effect.fn("HubMembershipTest.setup")(function* (fixture: Fi
         new HubOcxError({ reason: "unreachable", message: "ocx could not be run here." }),
       );
     if (group === "link" && command === "status") {
+      if (statusBroken === "unstartable" || statusBroken === "missing")
+        return Effect.fail(
+          new HubOcxError({
+            reason: statusBroken === "missing" ? "ocx_missing" : "ocx_unstartable",
+            message:
+              statusBroken === "missing"
+                ? "OpenCodex is not installed on this hub."
+                : "ocx could not be started on this hub.",
+          }),
+        );
+      if (statusBroken === "unreachable")
+        return Effect.fail(
+          new HubOcxError({ reason: "unreachable", message: "ocx could not be run here." }),
+        );
+      if (statusBroken === "failed") return Effect.succeed({ code: 1, stdout: "" });
+      if (statusBroken === "child") return Effect.succeed(json({ role: "child", links: [] }));
       if (fixture.linkStatus !== undefined)
         return Effect.succeed({
           code: 1,
@@ -171,6 +193,11 @@ export const setup = Effect.fn("HubMembershipTest.setup")(function* (fixture: Fi
     }
     if (command === "probe")
       return Effect.succeed(json({ alias, fingerprint: offered, keyType: "ssh-ed25519" }));
+    if (group === "link" && command === "routes")
+      return (
+        fixture.routesRun?.(args) ??
+        Effect.succeed(fixture.routes?.(args) ?? { code: 2, stdout: "" })
+      );
     if (command === "add") {
       if (fixture.addThrows === true)
         return Effect.fail(
@@ -215,6 +242,14 @@ export const setup = Effect.fn("HubMembershipTest.setup")(function* (fixture: Fi
         runtimeModeCeiling: "full-access" as const,
         capabilities: ["hub.manage" as const, "threads.launch" as const],
         maxLanes: 1,
+      },
+      // An agent profile allowed to manage only the machine "mini".
+      "hub-mini": {
+        id: "hub-mini",
+        runtimeModeCeiling: "full-access" as const,
+        capabilities: ["hub.manage" as const, "threads.launch" as const],
+        maxLanes: 1,
+        hosts: ["mini"],
       },
     },
   };
@@ -348,6 +383,7 @@ export const setup = Effect.fn("HubMembershipTest.setup")(function* (fixture: Fi
                     new HubOcxError({ reason: "unreachable", message: fixture.directFailure }),
                   ),
             penAliasRevision: () => Effect.succeed(undefined),
+            penExactRoute: () => Effect.die("unused"),
             runningTurns: () => Effect.succeed(fixture.running ?? 0),
             deviceHealth: (alias) =>
               Effect.sync(() => {
@@ -458,6 +494,10 @@ export const setup = Effect.fn("HubMembershipTest.setup")(function* (fixture: Fi
     /** Someone removes a link on the Home by hand. */
     unlink: (alias: string) => {
       links.delete(alias);
+    },
+    /** Later link-status reads fail (to spawn, no ocx, after running), are unreadable, or say Child. */
+    breakLinkStatus: (kind: "unstartable" | "missing" | "unreachable" | "failed" | "child") => {
+      statusBroken = kind;
     },
     /** Someone links the alias again by hand, under a new link id. */
     replaceLink: (alias: string, id: string) => {
