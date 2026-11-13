@@ -55,6 +55,7 @@ export GOAT_DESKTOP_PERSONAL_UPDATE_FEED=true
 export GOAT_DESKTOP_UPDATE_REPOSITORY=minerva32/goat
 
 if [[ "${GOAT_PERSONAL_UPDATE_SKIP_CHECK:-0}" != 1 ]]; then
+  git fetch origin dev
   ./node_modules/.bin/vp run check:changed
 fi
 output_dir="$state_dir/release-$version"
