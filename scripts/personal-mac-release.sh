@@ -55,8 +55,19 @@ export GOAT_DESKTOP_PERSONAL_UPDATE_FEED=true
 export GOAT_DESKTOP_UPDATE_REPOSITORY=minerva32/goat
 
 if [[ "${GOAT_PERSONAL_UPDATE_SKIP_CHECK:-0}" != 1 ]]; then
-  git fetch origin dev
-  ./node_modules/.bin/vp run check:changed
+  ./node_modules/.bin/vp run typecheck
+  ./node_modules/.bin/vp test run \
+    scripts/personal-update-feed.test.ts \
+    scripts/desktop-mac-entitlements.test.ts \
+    scripts/build-desktop-artifact-helper.test.ts \
+    scripts/build-computer-use-helper.test.ts \
+    packages/contracts/src/agentSurface/settingsAccess.test.ts \
+    apps/server/src/mcp/toolkits/environment/settings.test.ts \
+    apps/server/src/mcp/toolkits/environment/settingsWriters.test.ts \
+    apps/server/src/mcp/agentWorkspaceTerminal.test.ts \
+    apps/server/src/orchestration-v2/goat/DisplayAwakeReactor.test.ts \
+    apps/desktop/src/updates/DesktopUpdates.automatic.test.ts \
+    apps/desktop/src/updates/DesktopUpdates.feed.test.ts
 fi
 output_dir="$state_dir/release-$version"
 runtime_dir="$output_dir/ssh-runtime"
@@ -82,6 +93,27 @@ for file in "$zip_file" "$manifest" "$blockmap"; do
   [[ -s "$file" ]] || { print -u2 "Missing release asset: $file"; exit 1; }
 done
 rg -F "GOAT-$version-arm64.zip" "$manifest" >/dev/null
+verify_dir="$(mktemp -d "$state_dir/verify-app.XXXXXX")"
+trap 'rm -rf "$verify_dir"' EXIT
+ditto -x -k "$zip_file" "$verify_dir"
+signed_app="$verify_dir/GOAT.app"
+/usr/bin/codesign --verify --deep --strict "$signed_app"
+/usr/bin/codesign -d --entitlements - "$signed_app" 2>&1 |
+  rg -A2 -F '[Key] com.apple.security.automation.apple-events' | rg -q -F '[Bool] true' || {
+    print -u2 'Signed GOAT app lacks Apple Events entitlement.'
+    exit 1
+  }
+/usr/bin/plutil -extract NSAppleEventsUsageDescription raw -o - "$signed_app/Contents/Info.plist" | rg -q .
+if [[ -d /Applications/GOAT.app ]]; then
+  current_requirement="$(/usr/bin/codesign -dr - /Applications/GOAT.app 2>&1 | sed -n 's/^designated => //p')"
+  new_requirement="$(/usr/bin/codesign -dr - "$signed_app" 2>&1 | sed -n 's/^designated => //p')"
+  [[ -n "$current_requirement" && "$current_requirement" == "$new_requirement" ]] || {
+    print -u2 'Signed GOAT app changed its macOS permission identity.'
+    exit 1
+  }
+fi
+rm -rf "$verify_dir"
+trap - EXIT
 [[ -z "$(git status --porcelain)" ]] || { print -u2 'Build changed tracked source files.'; exit 1; }
 
 notes="$output_dir/release-notes.md"
