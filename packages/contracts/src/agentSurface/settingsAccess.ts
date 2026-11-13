@@ -1,5 +1,6 @@
 import type { ServerSettingsPatch } from "../settings.ts";
 import type { AgentSurfacePath } from "./registry.ts";
+import { PERSONAL_SETTINGS_ACCESS_OVERRIDES } from "./personalSettingsAccess.ts";
 
 /**
  * Who may change each server setting through the agent surface: agent (environment.settings_update),
@@ -17,12 +18,13 @@ const agent = { access: "agent" } as const;
 const path = (owner: AgentSurfacePath) => ({ access: "path", path: owner }) as const;
 const person = (reason: string) => ({ access: "person", reason }) as const;
 
+const GRANTS_AGENTS = "It widens what agents may do; a person grants that.";
 const HOLDS_SECRETS = "It holds credentials; a person enters them in Settings.";
 
-export const SETTINGS_ACCESS = {
+const DEFAULT_SETTINGS_ACCESS = {
   disabledGlobalSkills: agent,
-  mcpServers: agent,
-  speech: person("Voice configuration uses the separate voice:manage grant."),
+  mcpServers: person("It runs commands and holds credentials; a person configures it."),
+  speech: person("A person controls local speech model configuration."),
   setModelFavorites: agent,
   setModelsHidden: agent,
   setProviderModelOrder: agent,
@@ -32,10 +34,12 @@ export const SETTINGS_ACCESS = {
   worktreeCleanup: agent,
   storageCleanup: agent,
   worktreesDirectory: agent,
-  enableAgentMemoryAccess: agent,
-  agentMemoryLimitGiB: agent,
-  agentWorkspaceAccess: agent,
-  agentTerminalAccess: agent,
+  enableAgentMemoryAccess: person(GRANTS_AGENTS),
+  agentMemoryLimitGiB: person(
+    "It is this machine's memory safety limit for agents; a person sets it.",
+  ),
+  agentWorkspaceAccess: person(GRANTS_AGENTS),
+  agentTerminalAccess: person(GRANTS_AGENTS),
   memoryOwnerSourceReadPolicy: person(
     "It widens what memory reaches and grants standing consent; a person decides in Settings.",
   ),
@@ -50,29 +54,33 @@ export const SETTINGS_ACCESS = {
   codexTurnsSurviveServerStop: agent,
   codexAppServerIsolation: agent,
   automaticServerUpdates: agent,
-  enableAgentBrowserAccess: agent,
-  blockedBrowserHosts: agent,
-  projectAgentBrowserAccessOverrides: agent,
+  enableAgentBrowserAccess: person(GRANTS_AGENTS),
+  blockedBrowserHosts: person("It controls which browser hosts agents may use; a person decides."),
+  projectAgentBrowserAccessOverrides: person(GRANTS_AGENTS),
   defaultAutoPull: agent,
   defaultProjectScripts: agent,
   projectScriptOverrides: agent,
   projectAutoPullOverrides: agent,
   defaultModelSelection: path("provider.update"),
-  defaultRuntimeMode: agent,
-  projectSettingsOverrides: agent,
-  enableAgentDeviceAccess: agent,
+  defaultRuntimeMode: person(
+    "It sets the runtime mode new threads start in; a person chooses how much agents may do.",
+  ),
+  projectSettingsOverrides: person(
+    "Each entry replaces a project's whole override set, including runtime mode, agent access and provider overrides. Project defaults go through project.update and project standing instructions through environment.preferences_update.",
+  ),
+  enableAgentDeviceAccess: person(GRANTS_AGENTS),
   agentToolListing: agent,
-  enableDeviceSupport: agent,
+  enableDeviceSupport: person("It turns on control of phones and simulators on this machine."),
   enableCua: path("computer_use.update"),
-  computerUseKeepTypedText: agent,
+  computerUseKeepTypedText: person("It stores typed text in the computer use history."),
   disabledBuiltInSkills: agent,
-  cuaFullAccessAutoAdmit: agent,
-  cuaMovePointer: agent,
-  cuaStrictInputGuards: agent,
-  cuaAllowedApps: agent,
-  cuaDeniedApps: agent,
+  cuaFullAccessAutoAdmit: person(GRANTS_AGENTS),
+  cuaMovePointer: person(GRANTS_AGENTS),
+  cuaStrictInputGuards: person("A person chooses whether input guards restrict agents."),
+  cuaAllowedApps: person(GRANTS_AGENTS),
+  cuaDeniedApps: person("An organization or person sets the computer use safety boundary."),
   deviceOnboardingCompleted: agent,
-  deviceHosts: agent,
+  deviceHosts: person("It adds machines this server connects to over SSH."),
   easDeviceHosts: person(HOLDS_SECRETS),
   sidebarAutoSettleAfterDays: agent,
   compactIdleThreads: agent,
@@ -83,12 +91,14 @@ export const SETTINGS_ACCESS = {
   snoozeLimitedThreads: agent,
   snoozePresets: agent,
   fleet: path("fallback_chain.set"),
-  goatclaw: agent,
-  hub: person("Memory hub changes require a dedicated consent transition in Settings."),
+  goatclaw: person("It is the permission policy that bounds agents."),
+  hub: person("It links this machine with other machines."),
   hubRelayWarningDeviceGbPerDay: agent,
   hubRelayWarningHubGbPerDay: agent,
-  pen: agent,
-  guestSharingEnabled: agent,
+  pen: person(
+    "It pins the Pen this machine trusts and delegates the owner's authority to mesh members; a person confirms it.",
+  ),
+  guestSharingEnabled: person("It lets guests reach this environment."),
   backgroundActivity: agent,
   automaticGitFetchInterval: agent,
   providerHealthRefreshInterval: agent,
@@ -113,7 +123,7 @@ export const SETTINGS_ACCESS = {
   reviewGuideModelSelection: agent,
   reviewGuideInstructions: agent,
   pullRequestMergeMethod: agent,
-  observability: agent,
+  observability: person("It sends telemetry from this machine to an outside address."),
   sourceControlHosts: person(HOLDS_SECRETS),
   completionWebhook: person("It sends reports to an outside address and holds a signing secret."),
   providerInstances: path("provider.update"),
@@ -125,6 +135,12 @@ export const SETTINGS_ACCESS = {
   usageModelAliases: agent,
   usageModelFilter: agent,
   goatBotHome: path("channel.bot_home_claim"),
+} as const satisfies { readonly [K in SettingsKey]-?: SettingsAccess };
+
+// Keep personal access policy outside upstream's table to reduce merge conflicts.
+export const SETTINGS_ACCESS = {
+  ...DEFAULT_SETTINGS_ACCESS,
+  ...PERSONAL_SETTINGS_ACCESS_OVERRIDES,
 } as const satisfies { readonly [K in SettingsKey]-?: SettingsAccess };
 
 /**
