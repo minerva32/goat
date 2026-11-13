@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off - Node's typed junction API avoids Windows symlink privileges while keeping the probe isolated.
 import { MAC_COMMAND_USAGE_DESCRIPTIONS } from "./lib/mac-command-usage-descriptions.ts";
+import { MAC_AUTOMATION } from "./lib/mac-automation.ts";
 import { makeMacPackagedPayloadValidator } from "./desktop-artifact-mac.ts";
 import { countWindowsPayloadFiles } from "./desktop-artifact-windows-payload.ts";
 
@@ -1424,12 +1425,15 @@ export interface MacPasskeyEntitlements {
  * Every macOS build signs the app with these; Electron helpers get them without `passkey`.
  * Passkey identity keys need the provisioning profile, so only the main app carries them.
  */
-export function renderMacEntitlements(passkey?: MacPasskeyEntitlements): string {
+export function renderMacEntitlements(
+  passkey?: MacPasskeyEntitlements,
+  allowAppleEvents = false,
+): string {
   const identity = passkey ? renderMacPasskeyIdentityEntitlements(passkey) : "";
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-  <dict>${identity}
+  <dict>${identity}${allowAppleEvents ? MAC_AUTOMATION.entitlement : ""}
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
@@ -3129,6 +3133,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         ...MAC_COMMAND_USAGE_DESCRIPTIONS,
         NSScreenCaptureUsageDescription:
           "GOAT captures the active window when you use the window capture shortcut.",
+        NSAppleEventsUsageDescription: MAC_AUTOMATION.usageDescription,
         NSMicrophoneUsageDescription:
           "GOAT uses this Mac's microphone for voice input and for commands run by terminals and coding agents, including work started from connected devices. After you allow access, those commands can record without asking again.",
         // macOS lists an app under Default web browser only when it opens web
@@ -4383,6 +4388,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         macPasskeySigning && macWebAuthn
           ? { configuration: macPasskeySigning, webAuthn: macWebAuthn }
           : undefined,
+        true,
       ),
     );
     yield* fs.writeFileString(macSigning.entitlementsInheritPath, renderMacEntitlements());
