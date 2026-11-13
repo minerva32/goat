@@ -310,11 +310,19 @@ A node may use several relays at once. Each runs the contract in "Relay" on its 
   handshake stalls for 10 s, and applies the uplink fair share also to what it has queued for the uplink, so a client
   flooding empty DATA ends only its own session 4408. Session ids count per node id while
   that node has sockets on the relay and wrap like the Worker's (skipping live ids), so a node sees only its own
-  sessions' ids and nothing is kept per node id once its last socket is gone. The room, and with it the counter, outlives an uplink only while clients
+  sessions' ids and no session id state is kept per node id once its last socket is gone. The room, and with it the counter, outlives an uplink only while clients
   remain, so a new counter always meets a new uplink connection, and a node keys sessions by its uplink connection:
   an id from an earlier counter (a restart, or a room that emptied) cannot reach a session of the new one. The counter
   does not read the clock. (The Worker keeps its counter in that node id's Durable Object, one stored integer per node
   id that ever had a client reach its authenticated uplink, with no cleanup.)
+- Relay traffic (operators only, nothing on the wire): both relays count the payload bytes they deliver for each
+  admitted session, toward the node and toward its client. Per-node numbers are kept only for node ids the operator
+  lists, since anyone can mint one. `pen relay serve` (`--traffic-nodes`) writes one stderr line per session a listed
+  node answered (the node id's first 8 characters, the bytes, duration, which side ended it, the close code and the
+  time) and every 10 minutes the listed nodes' totals and relay-wide totals; lines pass a bounded queue and a rate
+  limit, totals are exact. The Worker logs nothing and keeps one `traffic` row in the Durable Object of each node id
+  in its `TRAFFIC_NODES` secret, written at most once a minute. Neither keeps an address, a header or anything from a
+  session.
 
 ## Accounts (v1.1)
 
@@ -389,7 +397,7 @@ HTTP 429. One Durable Object holds all state; it is a single point of failure fo
 v1.1 nodes store a record of an unknown `type`, or with top-level members they do not know, when it is otherwise valid,
 forward it, and give it no effect. Unknown members inside a nested object (a card, `loginKey`) are ignored. Every member
 must run v1.1 before any member signs an `account` or `lock` record (the signer checks the versions members announce
-in sync `hello` as `"pen":"1.1"` and refuses otherwise); v1.0 nodes reject those types and would stall.
+in sync `hello` as `"pen":"1.1"` or `"2.0"` and refuses otherwise); v1.0 nodes reject those types and would stall.
 
 - `account`: `{"loginUrl","loginKey":{"kid","pub"},"sub"}` or `{"sub":null}` (unbind). The binding is the last `account`
   record in canonical order whose signer was not revoked as compromised (directly or as an admit of a compromised key);
@@ -479,7 +487,7 @@ mesh is unbound, or bound to an older login key, offers to bind it again (same q
 A node can hand a member's session to a local program that registered a name with it, and tell that program, with
 proof, which member is calling. GOAT is the first such program (name `goat`). Nothing here changes `tcp`, `mesh`,
 `join` or `account`: v1.2 adds no record type and no sync message, and leaves the version nodes announce in the sync
-hello as it was (`"pen":"1.1"`, or `"2.0"` in a mesh of the shared epoch). Until
+hello as it was (`"pen":"1.1"`, or `"2.0"` in a mesh of the shared epoch or while holding no records yet). Until
 a program registers, a node refuses every service stream.
 
 ### The service stream
@@ -656,7 +664,7 @@ A program that registered a name can let keys that are not members reach it: GOA
 A listed client key reaches only the service stream of the name whose registration lists it, and a service invite
 admits pairing handshakes for one pairing. Nothing here changes members, records, sync, `tcp`, `mesh` or `join`;
 `account` changes only in that kind 0x04 refuses a key any registration lists ("Admission of client keys"); and the version nodes announce in the sync hello is unchanged (`"pen":"1.1"`, or `"2.0"` in a mesh of the shared
-epoch). In v1.3 only a registration of the name `goat` may hold a client
+epoch or while holding no records yet). In v1.3 only a registration of the name `goat` may hold a client
 list or an invite. Until its holder sends a list no client key is admitted, and until it sends an invite no
 `service-pair` handshake is.
 
@@ -801,13 +809,53 @@ the other two forms.
 
 No close code is new, and close codes stay unauthenticated.
 
+## Traffic counters (v1.3)
+
+Local to one node: nothing here is sent to a relay or another node, and nodes announce the same version. A node
+counts, per member and per relay, the stream bytes of its sessions for the last 24 hours, so a person can see which
+member's sessions load which relay.
+
+- What counts: the payload of DATA records a `tcp` or `service` session sent to the member (out) and received from
+  it (in). FIN and CREDIT records, record, Noise, WebSocket and TLS framing and the handshake race are not counted,
+  so a counter reads a little below what the process moved on the network.
+- Who counts: `pen pipe` and each `pen forward` connection report their session to the node's daemon; the daemon
+  counts the `tcp` sessions it accepts itself. Service streams it accepts are not counted.
+- Control op `traffic.report`, on the control socket only (the dashboard cannot send it):
+  `{"op":"traffic.report","node":N,"relay":R,"in":I,"out":O}` with exactly these members, none null. N is a node id
+  of a current or revoked member of the node's view, R the relay URL the session used (at most 512 bytes; a relay the
+  node does not list, when it reports or when it shows the totals, counts as `""`), I and O integers from 0 to
+  2^53−1: the bytes since that session's last settled report. Answer `{"t":"counted"}`. A refusal is
+  `{"error":"..."}` and counts nothing. A node older than this answers that it does not know the op; the session goes
+  on unchanged, and it prints nothing either way.
+- Reporter: one report every 2 minutes, each within 1 s (connecting, writing, the answer), and one when the session
+  ends. The end of a session (a periodic report still in flight, the session's last sends and receives returning,
+  the last report) shares one deadline of 1 s, so a daemon that takes reports and never answers delays the end of a
+  session by at most 1 s. A report whose answer never came may have been counted, so its bytes are not sent again.
+  Bytes the node certainly did not take (the line never reached it whole, or it refused the report) are kept per
+  report that carried them and wait for later reports while less than one bucket (15 minutes) has passed since they
+  began, by the monotonic clock and by the wall clock alike; after that they are dropped. At every report the
+  reporter compares both clocks since the previous report: when that was a bucket or more ago, or the wall clock
+  moved more than 1 s apart from the monotonic one (it was set, or the machine slept where the monotonic clock
+  stops), where the pending bytes belong is unknown, and they are dropped, never sent. Counts are lost while no
+  daemon counts or the clock is unsure, never moved to a bucket more than one bucket later than the one their bytes
+  crossed the relay in.
+- Window: 96 buckets of 15 minutes by the node's wall clock, so bytes leave the total between 23 h 45 min and 24 h
+  after they were counted. A wall clock set back by less than 23 h 45 min keeps every count; set back further, it can
+  drop the counts of the buckets it skips (bucket indices, not elapsed time, decide). A node holds at most 512
+  (member, relay) pairs; a new pair past that is refused until a pair's window is empty. The counts live only in the
+  daemon's memory, and a restart starts them at zero.
+- `pen ls --json` adds `traffic24h` (`{"in","out","relays":[{"url","in","out"}]}`) to each member and each revoked
+  key with bytes in the window, and `relays24h` (`[{"url","in","out"}]`) and `trafficSince` (milliseconds since the
+  Unix epoch, where the totals start) to the reply while any bytes are counted. Every other field keeps its name,
+  type and meaning, and a node with nothing counted prints exactly what it printed before.
+
 ## Close codes
 
 Doriterm's codes, same meanings: 4400 crypto or framing failure; 4401 not admitted (unknown key, revoked member,
 no live invite, refused card); 4402 relay protocol error; 4403 relay auth failed; 4404 node offline or port refused;
 4408 idle, backpressure or handshake timeout; 4409 uplink replaced; 4429 caps; 4507 a mesh sync whose records the node could not save, or while it holds records it could not save;
 4508 a mesh sync that brought a record the node refused for its record cap (relays never send 45xx); 4509 a mesh sync
-whose peer did not announce the shared epoch, from a node of a mesh of that epoch. 4410 and 4412 are unused. Kind 0x04 uses 4429 for an evicted session without an assertion and 4408 for an assertion
+whose peer did not announce the shared epoch, whether or not that peer holds records yet, from a node of a mesh of that epoch. 4410 and 4412 are unused. Kind 0x04 uses 4429 for an evicted session without an assertion and 4408 for an assertion
 or card that did not arrive within 10 s.
 On a service stream 4404 also means that no program holds the name or that its local delivery failed, and 4429
 that 32 deliveries are already in progress. From v1.3, 4401 also closes a client or pairing session whose
@@ -858,7 +906,8 @@ v1.2 member-only reader refuses both valid new forms.
 - v1.1 (2026-11-11): a mesh whose found record has `v` 2 is of the shared epoch (ADR-0026): all its records have `v` 2, a node of it announces `"pen":"2.0"` in the sync hello and closes 4509 when
   the peer does not, a record names its signer's previous record directly in `prev` or has no effect, and each
   admission lineage keeps fixed shares of records (structure/decisions/ADR-0026). Older nodes drop `v` 2 records.
-  A node holding no records yet (joining) may announce anything and is sent the records. `pen up` and `pen login`
+  A node holding no records yet (joining) cannot know the epoch: this version announces `"pen":"2.0"` then and is sent
+  the records, while an empty peer announcing anything else is closed 4509 like any other. `pen up` and `pen login`
   found meshes of this epoch.
 - v1.1 (2026-11-11): `pen relay serve` admits a client session only when its OPEN and CLOSE toward the uplink fit
   (else 4429), and past 8 pending sessions per node the address holding the most loses its oldest (4429). Go relay
@@ -888,6 +937,9 @@ v1.2 member-only reader refuses both valid new forms.
   OPEN past them with CLOSE 4429; a stream cut before the peer's FIN and all its DATA reached the local socket resets
   that TCP connection instead of closing it; `pen pipe` reads flags only before the node; the Unix `pen-*` ssh block
   quotes `%n` ("SSH config for exact routes").
+- v1.3 (2026-11-12): node side only, no wire change between nodes: control op `traffic.report` and 24-hour byte
+  counters per member and per relay in `pen ls --json` and the dashboard ("Traffic counters"). Nothing new is sent
+  to a relay or a member.
 - v1.3 (2026-11-12): "Service clients": ops on a service registration set a list of client keys and a service
   invite, each answered so an older node fails closed; a listed key reaches only `service` of the name that lists it,
   under phone slots counted before message 2; `service-pair` handshakes (kind 0x03) with a budget of 4 and an atomic
@@ -900,3 +952,6 @@ v1.2 member-only reader refuses both valid new forms.
   applies that view; list drops and registration ends close 4401 unless the session is already closing, with every
   local connection closed before the answer; `pen service register` prints the answers to forwarded ops before it
   exits at the end of stdin; two v1.2 sentences point to the v1.3 exceptions.
+- v1.3 (2026-11-12): relays count each session's delivered payload bytes for operators ("Relay traffic" under
+  "Several relays"): relay-wide totals on the Go relay, and for node ids the operator lists, session lines and totals
+  on the Go relay and one row per node id on the Worker. No wire change.

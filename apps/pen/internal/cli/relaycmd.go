@@ -21,6 +21,7 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/goat-si/goat/apps/pen/internal/daemon"
+	"github.com/goat-si/goat/apps/pen/internal/ident"
 	"github.com/goat-si/goat/apps/pen/internal/relayserver"
 	"github.com/goat-si/goat/apps/pen/internal/wire"
 )
@@ -90,21 +91,26 @@ func runRelayEdit(verb string, args []string, stdout, stderr io.Writer) int {
 	cl, err := daemon.Dial(st)
 	switch {
 	case errors.Is(err, daemon.ErrNotRunning):
-		// Under the state lock, as UpdateConfig, but an edit that changes nothing writes nothing.
-		unlock, err := st.Lock()
-		if err != nil {
-			return fail(stderr, err)
-		}
-		defer unlock()
-		c, err := st.LoadConfig()
-		if err != nil {
-			return fail(stderr, err)
-		}
-		if list, already, editErr = edit(c); editErr == nil && !already {
-			c.SetRelays(list)
-			if err := st.SaveConfig(c); err != nil {
-				return fail(stderr, err)
+		// Under the state lock, as UpdateConfig, but an edit that changes nothing writes nothing. The
+		// lock is released before anything is printed: blocked output must not hold other writers.
+		err := func() error {
+			unlock, err := st.Lock()
+			if err != nil {
+				return err
 			}
+			defer unlock()
+			c, err := st.LoadConfig()
+			if err != nil {
+				return err
+			}
+			if list, already, editErr = edit(c); editErr == nil && !already {
+				c.SetRelays(list)
+				return st.SaveConfig(c)
+			}
+			return nil
+		}()
+		if err != nil {
+			return fail(stderr, err)
 		}
 	case err != nil:
 		return fail(stderr, err)
@@ -174,10 +180,15 @@ type serveConfig struct {
 	// readTimeout and limits override the defaults in tests.
 	readTimeout time.Duration
 	limits      *relayserver.Limits
+	// trafficLog receives the relay's session and totals lines (stderr, so the service journal).
+	trafficLog io.Writer
+	// trafficNodes are the node ids that get totals and session lines.
+	trafficNodes map[string]bool
 }
 
 func parseServe(args []string, stderr io.Writer) (serveConfig, error) {
 	var c serveConfig
+	var trafficNodes string
 	fs := flag.NewFlagSet("pen relay serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&c.listen, "listen", ":443", "address to listen on")
@@ -192,12 +203,18 @@ func parseServe(args []string, stderr io.Writer) (serveConfig, error) {
 	fs.IntVar(&c.maxUnauth, "max-unauth-per-node", relayserver.DefaultMaxUnauthPerNode, "most unauthenticated uplinks per node id (a newer one evicts the oldest)")
 	fs.IntVar(&c.maxQueuedMiB, "max-queued-mib", relayserver.DefaultMaxQueued>>20, "most MiB all sockets' queued and partly read messages hold together; data past it ends its session 4408")
 	fs.IntVar(&c.maxShareMiB, "max-queued-per-source-mib", relayserver.DefaultMaxQueuedPerSource>>20, "most of --max-queued-mib one IPv4 address's or IPv6 /64's sockets hold; data past it ends the session that holds it 4408")
+	fs.StringVar(&trafficNodes, "traffic-nodes", "", "comma-separated node ids that get byte totals and session lines on stderr (relay-wide totals need none)")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
 	if fs.NArg() != 0 {
 		return c, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
+	nodes, err := parseTrafficNodes(trafficNodes)
+	if err != nil {
+		return c, err
+	}
+	c.trafficNodes = nodes
 	if c.maxSockets < 1 || c.maxPerIP < 1 || c.maxUnauth < 1 || c.maxQueuedMiB < 1 || c.maxShareMiB < 1 {
 		return c, errors.New("--max-sockets, --max-per-ip, --max-unauth-per-node, --max-queued-mib and --max-queued-per-source-mib must be at least 1")
 	}
@@ -299,6 +316,8 @@ func serveOn(ctx context.Context, c serveConfig, ln net.Listener, ready func(add
 	rs.MaxSockets, rs.MaxPerIP, rs.MaxUnauthPerNode = c.maxSockets, c.maxPerIP, c.maxUnauth
 	rs.MaxQueued = c.maxQueuedMiB << 20
 	rs.MaxQueuedPerSource = c.maxShareMiB << 20
+	rs.TrafficLog = c.trafficLog
+	rs.TrafficNodes = c.trafficNodes
 	rs.Hooks = hooks
 	readTimeout := 30 * time.Second
 	if c.readTimeout > 0 {
@@ -352,6 +371,7 @@ func runRelayServe(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	c.trafficLog = stderr
 	mode := "tls"
 	if c.plain {
 		mode = "plain"
@@ -432,4 +452,24 @@ func dnsName(h string) bool {
 		}
 	}
 	return true
+}
+
+// parseTrafficNodes reads --traffic-nodes: full node ids separated by commas, at most
+// relayserver.MaxTrafficNodes of them.
+func parseTrafficNodes(list string) (map[string]bool, error) {
+	nodes := map[string]bool{}
+	for _, id := range strings.Split(list, ",") {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if !ident.ValidNodeID(id) {
+			return nil, fmt.Errorf("--traffic-nodes wants full node ids (26 characters of a-z and 2-7, as pen ls --json shows), not %q", id)
+		}
+		nodes[id] = true
+	}
+	if len(nodes) > relayserver.MaxTrafficNodes {
+		return nil, fmt.Errorf("--traffic-nodes lists %d node ids; at most %d", len(nodes), relayserver.MaxTrafficNodes)
+	}
+	return nodes, nil
 }

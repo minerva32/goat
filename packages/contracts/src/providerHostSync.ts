@@ -39,7 +39,10 @@ export const ProviderHostSyncDriver = Schema.Literals([
 ]);
 export type ProviderHostSyncDriver = typeof ProviderHostSyncDriver.Type;
 
-/** npm: the vendor's npm package. script: the vendor's install script. manual: a person installs it. */
+/**
+ * npm: the vendor's npm package. script: a vendor release checked against a pinned SHA-256 (older
+ * hosts: the vendor's install script). manual: a person installs it.
+ */
 export const ProviderHostInstallMethod = Schema.Literals(["npm", "script", "manual"]);
 export type ProviderHostInstallMethod = typeof ProviderHostInstallMethod.Type;
 
@@ -124,6 +127,11 @@ export const ProviderHostRow = Schema.Struct({
   cloud: Schema.optionalKey(ProviderHostCloudReadiness),
   /** Whether that machine can run computer use. Older hosts omit it. */
   computerUse: ForwardCompatibleOptional(HostComputerUse),
+  /**
+   * `verified` when that machine installs provider CLIs only from npm at a version or from a
+   * release checked against a pinned SHA-256. Older hosts omit it; they may pipe vendor scripts.
+   */
+  installs: ForwardCompatibleOptional(Schema.Literal("verified")),
 });
 export type ProviderHostRow = typeof ProviderHostRow.Type;
 
@@ -191,6 +199,8 @@ export const ProviderSyncHostState = Schema.Struct({
   version: Schema.NullOr(Version),
   message: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(1_024))),
   login: Schema.optionalKey(ProviderSyncLogin),
+  /** The installer command line this host ran, from GOAT's fixed recipe. */
+  ran: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(512))),
 });
 export type ProviderSyncHostState = typeof ProviderSyncHostState.Type;
 
@@ -211,7 +221,7 @@ export type ProviderSyncState = typeof ProviderSyncState.Type;
 /** Exact release or `latest`. The strict pattern keeps it safe as an installer argument. */
 export const ProviderSyncVersion = Schema.String.check(
   Schema.isPattern(
-    /^(?:latest|\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z]{1,20}(?:\.[0-9A-Za-z]{1,20}){0,4})?)$/u,
+    /^(?:latest|\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z-]{1,20}(?:\.[0-9A-Za-z-]{1,20}){0,4})?)$/u,
   ),
 );
 

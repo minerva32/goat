@@ -36,14 +36,16 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import { HttpClient } from "effect/http";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -68,18 +70,21 @@ import {
   type SshHostCaller,
 } from "../sshRemote/SshHostAuthorization.ts";
 import * as Dispatch from "../sshRemote/SshRemoteDispatch.ts";
-import { HOST_SYNC_PATH, makeApprovedSyncs } from "./approvedSyncs.ts";
+import { HOST_SYNC_PATH, makeApprovedSyncs, syncApprovalCard } from "./approvedSyncs.ts";
 import * as ProviderAuth from "./ProviderAuthService.ts";
 import * as Diagnosis from "./ProviderDiagnosisService.ts";
 import { deriveProviderInstanceConfigMap } from "./ProviderInstanceRegistryHydration.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
+import { checksCli, ProviderCliGate } from "./ProviderCliGate.ts";
+import { installArtifact } from "./ProviderHostSyncArtifact.ts";
+import { installFailure, runInstaller, withProbedCli } from "./ProviderHostSyncInstall.ts";
 import {
+  describeInstall,
   describeInstallFailure,
   forgetCommandMisses,
   hostPlatform,
   installCommand,
-  installedButNotFound,
   installMethod,
   PROVIDER_HOST_SYNC_DRIVERS,
   parseDeviceLogin,
@@ -89,12 +94,20 @@ import {
 } from "./ProviderHostSyncRecipes.ts";
 import {
   askFailed,
+  callerKey,
+  cancelsSettled,
+  cancelTask,
+  claimCancel,
   classify,
   type Failure,
   fail,
   type HostTask,
+  lostTrack,
+  ownerSession,
   type RemoteFailure,
+  remoteHostState,
   type SyncOperation,
+  unverifiedRemote,
   update,
 } from "./ProviderHostSyncTasks.ts";
 
@@ -108,7 +121,6 @@ const MATRIX_DEADLINE_MS = 20_000;
 /** Holder diagnosis probes three CLIs, so only a cloud matrix row waits this long. */
 const CLOUD_MATRIX_DEADLINE_MS = 120_000;
 const CALL_DEADLINE_MS = 60_000;
-const INSTALL_DEADLINE = Duration.minutes(10);
 const LOGIN_DEADLINE = Duration.minutes(15);
 const REMOTE_POLL = Duration.seconds(3);
 const REMOTE_DEADLINE_MS = 30 * 60_000;
@@ -165,7 +177,9 @@ const make = Effect.gen(function* () {
   const environment = yield* Environment.ServerEnvironmentIdentity;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const scope = yield* Scope.Scope;
-  const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
+  const context = yield* Effect.context<
+    FileSystem.FileSystem | Path.Path | HttpClient.HttpClient
+  >();
   const crypto = yield* Crypto.Crypto;
   const hostname = yield* HostProcess.Hostname;
   const runtimePlatform = yield* HostProcess.Platform;
@@ -174,6 +188,7 @@ const make = Effect.gen(function* () {
   const platform = hostPlatform(runtimePlatform);
   const operations = new Map<string, SyncOperation>();
   const installers = yield* Semaphore.make(MAX_CONCURRENT_INSTALLERS);
+  const cliGate = yield* Effect.serviceOption(ProviderCliGate);
 
   const readCeiling = (caller: SshHostCaller) =>
     authorizeSshHost(sessions, caller, "orchestration:read").pipe(
@@ -181,11 +196,9 @@ const make = Effect.gen(function* () {
     );
 
   /**
-   * Installing software on a machine is a full-access act, so every caller
-   * needs a live providers:manage grant. Another machine's approved sync
-   * arrives as an outside client whose session carries that grant only
-   * because the person who approved it holds it there. Thread agents never
-   * pass: they get an approval handoff instead.
+   * Installing software needs a live providers:manage grant. An approved sync reaches another
+   * machine as an outside client holding the approver's grant there. Thread agents never pass,
+   * whatever their runtime mode: they get an approval handoff instead.
    */
   const writeCeiling = (caller: SshHostCaller): Effect.Effect<RuntimeMode, Failure> => {
     if (caller.kind === "mcp" && (caller.scope.thread !== undefined || !caller.scope.client))
@@ -199,16 +212,6 @@ const make = Effect.gen(function* () {
       Effect.as("full-access" as RuntimeMode),
     );
   };
-
-  const ownerSession = (caller: SshHostCaller): string =>
-    caller.kind === "client" ? caller.sessionId : (caller.scope.client?.sessionId ?? "mcp");
-
-  const callerKey = (caller: SshHostCaller): string =>
-    caller.kind === "client"
-      ? `session:${caller.sessionId}`
-      : caller.scope.thread !== undefined
-        ? `thread:${caller.scope.thread.threadId}`
-        : `session:${caller.scope.client?.sessionId ?? "unknown"}`;
 
   const canManage = (caller: SshHostCaller) =>
     writeCeiling(caller).pipe(
@@ -337,6 +340,7 @@ const make = Effect.gen(function* () {
         arch: runtimeArch,
         goatVersion: packageJson.version,
         protocol: servedRuntimeProtocolRanges(),
+        installs: "verified" as const,
         ...(Option.isSome(cua) ? { computerUse: yield* cua.value.computerUse } : {}),
       };
       if (!includeCloud) {
@@ -377,12 +381,13 @@ const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(classify));
 
-  const remoteRow = (caller: SshHostCaller, host: string, includeCloud: boolean) =>
+  const remoteRow = (caller: SshHostCaller, host: string, includeCloud: boolean, asOwner = false) =>
     callRemote(caller, {
       host,
       tool: MATRIX_TOOL,
       arguments: includeCloud ? { localOnly: true, cloud: true } : { localOnly: true },
       writes: false,
+      asOwner,
       timeoutMs: includeCloud ? CLOUD_MATRIX_DEADLINE_MS : MATRIX_DEADLINE_MS,
     }).pipe(
       Effect.flatMap((raw) =>
@@ -423,8 +428,7 @@ const make = Effect.gen(function* () {
     const includeCloud = input.cloud === true;
     const local = yield* localRow(includeCloud);
     if (input.localOnly === true) return { rows: [local] };
-    // Connected hosts plus aliases the user wrote in ssh config; known_hosts
-    // entries are left out because they include every server ever reached.
+    // Connected hosts plus ssh-config aliases; known_hosts lists every server ever reached.
     const hosts = input.hosts ?? [
       ...(yield* dispatch.connectedHosts),
       ...(yield* dispatch.listHosts({ probe: false }).pipe(
@@ -459,7 +463,10 @@ const make = Effect.gen(function* () {
         ? Effect.void
         : Effect.forEach(operation.settlers.splice(0), (settle) => settle(view(operation)), {
             discard: true,
-          }).pipe(Effect.uninterruptible),
+          }).pipe(
+            Effect.andThen(Deferred.succeed(operation.allFinished, undefined)),
+            Effect.uninterruptible,
+          ),
     );
 
   const prune = Effect.gen(function* () {
@@ -515,6 +522,7 @@ const make = Effect.gen(function* () {
         })),
         owners: new Set(owners),
         fibers: [],
+        allFinished: yield* Deferred.make<void>(),
         settlers: settle === undefined ? [] : [settle],
       };
       for (const task of operation.hosts) task.onFinished = settleIfDone(operation);
@@ -531,47 +539,21 @@ const make = Effect.gen(function* () {
       operation.fibers.push(fiber);
     });
 
-  /** Runs a fixed installer argv. Output is kept only to classify a failure. */
-  const runInstaller = (command: string, args: ReadonlyArray<string>) =>
-    Effect.gen(function* () {
-      const resolved = yield* resolveSpawnCommand(command, args);
-      const child = yield* spawner.spawn(
-        ChildProcess.make(resolved.command, resolved.args, {
-          shell: resolved.shell,
-          env: { CI: "1", npm_config_yes: "true" },
-          extendEnv: true,
-          stdin: "ignore",
-        }),
-      );
-      yield* Effect.addFinalizer(() => Effect.ignore(child.kill({ forceKillAfter: "1 second" })));
-      let tail = "";
-      const decoder = new TextDecoder();
-      const keep = (chunk: Uint8Array) =>
-        Effect.sync(() => {
-          tail = (tail + decoder.decode(chunk, { stream: true })).slice(-OUTPUT_LIMIT);
-        });
-      const [, , exitCode] = yield* Effect.all(
-        [
-          Stream.runForEach(child.stdout, keep),
-          Stream.runForEach(child.stderr, keep),
-          child.exitCode,
-        ],
-        { concurrency: "unbounded" },
-      );
-      return { exitCode: Number(exitCode), output: tail };
-    }).pipe(
-      Effect.scoped,
-      Effect.timeoutOption(INSTALL_DEADLINE),
-      Effect.map((result) =>
-        Option.getOrElse(result, () => ({ exitCode: null as number | null, output: "" })),
-      ),
-    );
-
   const instanceFor = (driver: ProviderHostSyncDriver) =>
     Effect.gen(function* () {
       const all = yield* instances.listInstances;
       const own = all.filter((instance) => instance.driverKind === driver);
       return own.find((instance) => instance.instanceId === driver) ?? own[0];
+    });
+
+  /** The sync's instance as its own probe sees it, when that probe runs a CLI from PATH. */
+  const cliProbe = (driver: ProviderHostSyncDriver) =>
+    Effect.gen(function* () {
+      const instance = yield* instanceFor(driver);
+      const cached = snapshotFor(yield* providers.getProviders, driver);
+      if (Option.isNone(cliGate) || instance === undefined || !checksCli(driver, cached?.cli))
+        return undefined;
+      return (fresh: boolean) => cliGate.value.probe(instance.instanceId, { fresh });
     });
 
   const refreshDriver = (driver: ProviderHostSyncDriver) =>
@@ -699,24 +681,30 @@ const make = Effect.gen(function* () {
       yield* update(task, { phase: "signed_in", login: undefined }, true);
     }).pipe(Effect.scoped, Effect.timeoutOption(LOGIN_DEADLINE));
 
-  const runLocal = (operation: SyncOperation, task: HostTask, owner: string) =>
+  const runLocal = (operation: SyncOperation, task: HostTask, caller: SshHostCaller) =>
     Effect.gen(function* () {
+      const owner = ownerSession(caller);
       const driver = operation.driver;
       const recipe = recipeFor(driver);
-      const before = (yield* localProviders).find((provider) => provider.driver === driver);
+      const probe = yield* cliProbe(driver);
+      const row = localProviders.pipe(Effect.map((all) => all.find((p) => p.driver === driver)));
+      const before = withProbedCli(yield* row, probe && (yield* probe(false)));
       const sameVersion =
         before?.installed === true &&
         (operation.version === null || before.version === null
           ? operation.version === null
-          : before.version.includes(operation.version));
+          : versionCore(before.version) === operation.version);
+      const command = sameVersion ? null : installCommand(driver, platform, operation.version);
       if (!sameVersion) {
-        const command = installCommand(driver, platform, operation.version);
         if (command === null)
           return yield* update(
             task,
             {
               phase: "failed",
-              message: `GOAT cannot install ${recipe.displayName} on ${runtimePlatform}. Install it with the vendor's instructions.`,
+              message:
+                operation.version !== null && installCommand(driver, platform, null) !== null
+                  ? `GOAT installs only the ${recipe.displayName} release it pins, not ${operation.version}. Sync latest, or install it with the vendor's instructions.`
+                  : `GOAT cannot install ${recipe.displayName} on ${runtimePlatform}. Install it with the vendor's instructions.`,
             },
             true,
           );
@@ -735,45 +723,64 @@ const make = Effect.gen(function* () {
             },
             true,
           );
-        yield* update(task, {
-          phase: "installing",
-          ...(command.latestOnly && operation.version !== null
-            ? { message: `${recipe.displayName}'s installer always installs the latest release.` }
-            : {}),
-        });
+        // Authority can lapse while this waits for the probe and other installs.
         const result = yield* installers.withPermits(1)(
-          runInstaller(command.command, command.args),
+          writeCeiling(caller).pipe(
+            Effect.andThen(
+              update(task, {
+                phase: "installing",
+                ran: describeInstall(command),
+              }),
+            ),
+            Effect.andThen(
+              command.method === "npm"
+                ? runInstaller(spawner, command.command, command.args)
+                : installArtifact(spawner, command.displayName, command.artifact).pipe(
+                    Effect.as({ exitCode: 0 as number | null, output: "" }),
+                    Effect.provideContext(context),
+                  ),
+            ),
+            Effect.result,
+          ),
         );
-        if (result.exitCode !== 0)
+        if (Result.isFailure(result))
+          return yield* update(task, { phase: "failed", message: result.failure.message }, true);
+        if (result.success.exitCode !== 0)
           return yield* update(
             task,
-            { phase: "failed", message: describeInstallFailure(result.exitCode, result.output) },
+            {
+              phase: "failed",
+              message: describeInstallFailure(result.success.exitCode, result.success.output),
+            },
             true,
           );
         yield* forgetCommandMisses;
       }
       const snapshot = yield* refreshDriver(driver);
-      const after = (yield* localProviders).find((provider) => provider.driver === driver);
+      const answer = probe && (yield* probe(true));
+      const after = withProbedCli(yield* row, answer);
       const host = { env: yield* HostProcess.Environment, platform: runtimePlatform };
-      const notFound = installedButNotFound(recipe.binary, host);
-      if (after?.installed !== true)
-        return yield* update(task, { phase: "failed", message: notFound }, true);
+      const failed = installFailure(recipe, operation.version, { after, answer, host }, command);
+      if (failed !== undefined || after === undefined)
+        return yield* update(task, { phase: "failed", ...failed }, true);
       yield* update(task, {
         phase: "installed",
         version: after.version,
         ...(sameVersion ? { message: "Already installed." } : {}),
       });
-      if (!operation.login || after.auth === "signed_in")
-        return yield* update(task, after.auth === "signed_in" ? { phase: "signed_in" } : {}, true);
+      if (after.auth === "signed_in") return yield* update(task, { phase: "signed_in" }, true);
+      // Installed only: say what a person runs there before its first thread.
+      const terminal = { login: { type: "terminal", command: recipe.terminalLogin } } as const;
+      if (!operation.login) return yield* update(task, terminal, true);
       const instance = yield* instanceFor(driver);
       if (snapshot?.setup?.canAuthenticate === true && instance !== undefined)
         return yield* goatLogin(task, driver, instance.instanceId, owner);
       if (recipe.deviceLogin !== undefined)
         return yield* deviceLogin(task, driver, instance?.instanceId);
-      yield* update(task, { login: { type: "terminal", command: recipe.terminalLogin } }, true);
+      yield* update(task, terminal, true);
     }).pipe(
       Effect.catchCause(() =>
-        task.finished
+        task.finished || task.cancelling
           ? Effect.void
           : update(
               task,
@@ -784,7 +791,11 @@ const make = Effect.gen(function* () {
               true,
             ),
       ),
-      Effect.ensuring(Effect.suspend(() => (task.finished ? Effect.void : update(task, {}, true)))),
+      Effect.ensuring(
+        Effect.suspend(() =>
+          task.finished || task.cancelling ? Effect.void : update(task, {}, true),
+        ),
+      ),
     );
 
   const runRemote = (
@@ -794,6 +805,13 @@ const make = Effect.gen(function* () {
     caller: SshHostCaller,
   ) =>
     Effect.gen(function* () {
+      // Read first, under the install's own authority: an older GOAT may pipe a vendor script.
+      const refused = unverifiedRemote(
+        yield* remoteRow(caller, host, false, true),
+        operation.driver,
+        recipeFor(operation.driver).displayName,
+      );
+      if (refused !== undefined) return yield* update(task, refused, true);
       yield* update(task, { phase: "installing" });
       // Forked into the service scope so cancelling this task leaves the call running: the
       // remote may already be installing, and only its answer names the sync to cancel there.
@@ -827,14 +845,10 @@ const make = Effect.gen(function* () {
       const deadline = (yield* Clock.currentTimeMillis) + REMOTE_DEADLINE_MS;
       while (true) {
         const remote = current.hosts[0];
-        if (remote !== undefined) yield* update(task, { ...remote, host });
-        if (current.done) return yield* update(task, {}, true);
+        yield* update(task, remote ? remoteHostState(operation, remote, host) : {}, current.done);
+        if (current.done) return;
         if ((yield* Clock.currentTimeMillis) > deadline)
-          return yield* update(
-            task,
-            { phase: "failed", message: `${host} did not finish within 30 minutes.` },
-            true,
-          );
+          return yield* lostTrack(task, `${host} did not finish within 30 minutes.`);
         yield* Effect.sleep(REMOTE_POLL);
         current = yield* callRemote(caller, {
           host,
@@ -848,24 +862,26 @@ const make = Effect.gen(function* () {
         );
       }
     }).pipe(
+      // A claimed host is the cancel's to finish: it knows whether the start may have run.
       Effect.catch((failure: RemoteFailure) =>
-        update(
-          task,
-          {
-            phase: failure.status === "update_runtime" ? "update_runtime" : "failed",
-            message:
+        task.cancelling
+          ? Effect.void
+          : lostTrack(
+              task,
               failure.status === "update_runtime"
                 ? `Update GOAT on ${host} to sync providers there. ${failure.message}`
                 : failure.message,
-          },
-          true,
-        ),
+              {
+                phase: failure.status === "update_runtime" ? "update_runtime" : "failed",
+                unsent: failure.unsent === true,
+              },
+            ),
       ),
       // An interrupted start call means this process is stopping; the restart path records that.
       Effect.catchCause((cause) =>
-        task.finished || Cause.hasInterruptsOnly(cause)
+        task.finished || task.cancelling || Cause.hasInterruptsOnly(cause)
           ? Effect.void
-          : update(task, { phase: "failed", message: `Lost track of ${host}.` }, true),
+          : lostTrack(task, `Lost track of ${host}.`),
       ),
     );
 
@@ -899,7 +915,6 @@ const make = Effect.gen(function* () {
       const { driver, version, login, hosts } = request;
       const created = yield* newOperation(driver, version, login, hosts, owners, settle);
       const { operation } = created;
-      const owner = ownerSession(caller);
       if (created.fresh)
         yield* Effect.forEach(
           operation.hosts,
@@ -907,7 +922,7 @@ const make = Effect.gen(function* () {
             fork(
               operation,
               task.state.host === null
-                ? runLocal(operation, task, owner)
+                ? runLocal(operation, task, caller)
                 : runRemote(operation, task, task.state.host, caller),
             ),
           { discard: true },
@@ -955,34 +970,19 @@ const make = Effect.gen(function* () {
         )).projection.runs.at(-1);
       if (!run || run.rootNodeId === null)
         return yield* fail("invalid_request", "Ask again while this thread is running.");
-      const name = recipeFor(input.driver).displayName;
-      const where = input.hosts?.join(", ") ?? hostname;
-      const handoff = yield* handoffs
-        .create({
-          kind: "approval",
-          title: `Install ${name} on ${where}?`,
-          reason: `An agent asked to install ${name}${input.version && input.version !== "latest" ? ` ${input.version}` : ""} with its official installer${input.login === false ? "" : " and start its sign-in"}.`,
-          requestedBy: {
-            threadId: thread.threadId,
-            providerInstanceId: thread.providerInstanceId,
-            path: HOST_SYNC_PATH,
-          },
-          target: { environmentId, path: HOST_SYNC_PATH },
+      const card = syncApprovalCard(
+        input,
+        recipeFor(input.driver).displayName,
+        input.hosts?.join(", ") ?? hostname,
+        {
+          requestedBy: { threadId: thread.threadId, providerInstanceId: thread.providerInstanceId },
+          environmentId,
           runId: run.id,
           nodeId: run.rootNodeId,
-          human: {
-            location: `Each machine runs ${name}'s own installer and sign-in. Sign in with your own account; GOAT never copies credentials between machines.`,
-          },
-          // The card describes exactly this input; it is what runs once approved.
-          args: {
-            driver: input.driver,
-            hosts: input.hosts ?? [],
-            version: input.version ?? null,
-            login: input.login ?? true,
-          },
           expiresAt: DateTime.add(yield* DateTime.now, { minutes: 15 }),
-        })
-        .pipe(Effect.mapError(askFailed));
+        },
+      );
+      const handoff = yield* handoffs.create(card).pipe(Effect.mapError(askFailed));
       return {
         kind: "needs_human" as const,
         handoff,
@@ -1044,36 +1044,28 @@ const make = Effect.gen(function* () {
     else if (caller.kind === "mcp" && caller.scope.thread !== undefined)
       yield* authorizeApprovalRequest(caller.scope);
     else yield* authorizeSshHost(sessions, caller, "orchestration:operate");
-    // Read before interrupting: an interrupted task marks itself finished and would be skipped.
-    const pending = operation.hosts.filter((task) => !task.finished);
-    yield* Effect.forEach(operation.fibers, Fiber.interrupt, { discard: true });
-    yield* Effect.forEach(
-      pending,
-      (task) =>
-        Effect.gen(function* () {
-          const remoteSyncId =
-            task.remoteSyncId ??
-            (task.starting === undefined
-              ? undefined
-              : yield* Fiber.await(task.starting).pipe(
-                  Effect.map((exit) =>
-                    Exit.isSuccess(exit) && exit.value.kind === "started"
-                      ? exit.value.sync.syncId
-                      : undefined,
-                  ),
-                ));
-          if (task.state.host !== null && remoteSyncId !== undefined)
-            yield* callRemote(caller, {
-              host: task.state.host,
-              tool: CANCEL_TOOL,
-              arguments: { syncId: remoteSyncId },
-              writes: true,
-              timeoutMs: MATRIX_DEADLINE_MS,
-            }).pipe(Effect.ignore);
-          yield* update(task, { phase: "cancelled", login: undefined }, true);
-        }),
-      { discard: true },
+    const stopping = yield* claimCancel(operation, scope, (pending) =>
+      Effect.forEach(operation.fibers, Fiber.interrupt, { discard: true }).pipe(
+        Effect.andThen(
+          Effect.forEach(
+            pending,
+            (task) =>
+              cancelTask(task, operation, (host, syncId) =>
+                callRemote(caller, {
+                  host,
+                  tool: CANCEL_TOOL,
+                  arguments: { syncId },
+                  writes: true,
+                  timeoutMs: MATRIX_DEADLINE_MS,
+                }).pipe(Effect.flatMap((raw) => decodeSyncState(raw))),
+              ),
+            { concurrency: "unbounded", discard: true },
+          ),
+        ),
+        Effect.provideContext(context),
+      ),
     );
+    yield* Fiber.await(stopping);
     return view(operation);
   });
 
@@ -1100,7 +1092,9 @@ const make = Effect.gen(function* () {
     respondHandoff: provided(respondHandoff),
     awaitDone: (syncId) =>
       find(syncId).pipe(
-        Effect.tap((operation) => Fiber.awaitAll(operation.fibers)),
+        Effect.tap((operation) =>
+          Deferred.await(operation.allFinished).pipe(Effect.andThen(cancelsSettled(operation))),
+        ),
         Effect.map(view),
       ),
     resumeApprovals: approvedSyncs.resume,

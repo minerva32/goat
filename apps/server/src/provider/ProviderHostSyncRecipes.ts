@@ -14,13 +14,31 @@ import * as Effect from "effect/Effect";
  */
 export type HostPlatform = "darwin" | "linux" | "win32" | "other";
 
-export interface InstallCommand {
-  readonly method: Exclude<ProviderHostInstallMethod, "manual">;
-  readonly command: string;
-  readonly args: ReadonlyArray<string>;
-  /** Installer cannot pin a version; it always installs the latest release. */
-  readonly latestOnly: boolean;
+/** A vendor release GOAT downloads itself and checks against a pinned SHA-256 before unpacking. */
+export interface PinnedArtifact {
+  readonly version: string;
+  /** `{os}` and `{arch}` are replaced by the host's `darwin`/`linux` and `x64`/`arm64`. */
+  readonly url: string;
+  readonly assets: Readonly<Record<string, { readonly sha256: string; readonly bytes: number }>>;
+  /** Under the home folder: versions live in `root/<version>`, links in `~/.local/bin`. */
+  readonly root: string;
+  readonly entry: string;
+  readonly links: ReadonlyArray<string>;
 }
+
+export type InstallCommand =
+  | {
+      readonly method: "npm";
+      readonly command: "npm";
+      readonly args: ReadonlyArray<string>;
+    }
+  | {
+      readonly method: "script";
+      /** What unpacks the verified archive; it must be on PATH. */
+      readonly command: "tar";
+      readonly displayName: string;
+      readonly artifact: PinnedArtifact;
+    };
 
 interface Recipe {
   readonly displayName: string;
@@ -30,10 +48,11 @@ interface Recipe {
   readonly aliases?: ReadonlyArray<string>;
   readonly npmPackage: string | null;
   readonly npmArgs?: ReadonlyArray<string>;
-  /** Posix install script, run as `bash -c script goat-install <version>`. */
-  readonly posixScript?: { readonly script: string; readonly pinnable: boolean };
-  /** PowerShell script; `{version}` is replaced by a validated version. */
-  readonly windowsScript?: { readonly script: string; readonly pinnable: boolean };
+  /**
+   * macOS and Linux release with pinned checksums, for a CLI npm does not ship. Vendor install
+   * scripts are never piped into a shell: they are unpinned and unverified.
+   */
+  readonly posixArtifact?: PinnedArtifact;
   /** Official device login that prints a verification page and a one-time code. */
   readonly deviceLogin?: {
     readonly args: ReadonlyArray<string>;
@@ -57,14 +76,6 @@ const RECIPES: Record<ProviderHostSyncDriver, Recipe> = {
     displayName: "Claude",
     binary: "claude",
     npmPackage: "@anthropic-ai/claude-code",
-    posixScript: {
-      script: 'curl -fsSL https://claude.ai/install.sh | bash -s -- "$1"',
-      pinnable: true,
-    },
-    windowsScript: {
-      script: "& ([scriptblock]::Create((irm https://claude.ai/install.ps1))) {version}",
-      pinnable: true,
-    },
     terminalLogin: "claude auth login",
   },
   cursor: {
@@ -73,10 +84,31 @@ const RECIPES: Record<ProviderHostSyncDriver, Recipe> = {
     binary: "agent",
     aliases: ["cursor-agent"],
     npmPackage: null,
-    posixScript: { script: "curl https://cursor.com/install -fsS | bash", pinnable: false },
-    windowsScript: {
-      script: "irm 'https://cursor.com/install?win32=true' | iex",
-      pinnable: false,
+    // The layout cursor.com/install creates. Windows has no pinned build, so a person installs it.
+    posixArtifact: {
+      version: "2026.11.11-b912975",
+      url: "https://downloads.cursor.com/lab/2026.11.11-b912975/{os}/{arch}/agent-cli-package.tar.gz",
+      assets: {
+        "darwin-arm64": {
+          sha256: "2c60b58fb7d9a54c7cb9460f0cbb10d451d4af025d4451f252e5f1d956f8c66f",
+          bytes: 175_088_185,
+        },
+        "darwin-x64": {
+          sha256: "38578cf7f2a7c67679cffaf95818b58fa3e21ff95f8883ad0af012b5d5460489",
+          bytes: 182_777_324,
+        },
+        "linux-arm64": {
+          sha256: "f068af64ed91b5304605976586f690579679f740a41f388091a6b3a2e776987c",
+          bytes: 175_384_019,
+        },
+        "linux-x64": {
+          sha256: "be01f42ad334f81d05a9992fcf060a52cc746f52cc451e849eb652146a6e3c91",
+          bytes: 176_703_341,
+        },
+      },
+      root: ".local/share/cursor-agent/versions",
+      entry: "cursor-agent",
+      links: ["agent", "cursor-agent"],
     },
     browserHosts: ["cursor.com"],
     terminalLogin: "agent login",
@@ -144,20 +176,25 @@ export function describeInstallFailure(exitCode: number | null, output: string):
 
 /** `codex-cli 0.42.0` and `0.42.0 (Claude Code)` both pin to 0.42.0. */
 export function versionCore(version: string): string | null {
-  return (
-    /\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z]{1,20}(?:\.[0-9A-Za-z]{1,20}){0,4})?/u.exec(
+  // A whole version or none: an identifier that runs on past a pin's bounds is not cut short,
+  // and a build-tagged version is no pin, since a pin cannot name build metadata.
+  const match =
+    /(?<![0-9A-Za-z_.+-])\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z-]{1,20}(?:\.[0-9A-Za-z-]{1,20}){0,4})?(\+[0-9A-Za-z.-]*)?(?![0-9A-Za-z_+-]|\.[0-9A-Za-z])/u.exec(
       version,
-    )?.[0] ?? null
-  );
+    );
+  return match === null || match[1] !== undefined ? null : match[0];
 }
 
 export const hostPlatform = (platform: string): HostPlatform =>
   platform === "darwin" || platform === "linux" || platform === "win32" ? platform : "other";
 
 const VERSION =
-  /^(?:latest|\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z]{1,20}(?:\.[0-9A-Za-z]{1,20}){0,4})?)$/u;
+  /^(?:latest|\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z-]{1,20}(?:\.[0-9A-Za-z-]{1,20}){0,4})?)$/u;
 
-/** The command to install `driver` on this platform, or null when a person must. */
+/**
+ * How GOAT installs `driver` on this platform, or null when a person must: npm at the requested
+ * version, or a pinned release whose SHA-256 is checked before anything is unpacked or run.
+ */
 export function installCommand(
   driver: ProviderHostSyncDriver,
   platform: HostPlatform,
@@ -168,37 +205,29 @@ export function installCommand(
   if (!VERSION.test(requested)) return null;
   const recipe = RECIPES[driver];
   if (platform === "other") return null;
-  const script = platform === "win32" ? recipe.windowsScript : recipe.posixScript;
-  if (script !== undefined) {
-    if (platform === "win32") {
-      return {
-        method: "script",
-        command: "powershell.exe",
-        args: [
-          "-NoProfile",
-          "-NonInteractive",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-Command",
-          script.script.replace("{version}", requested),
-        ],
-        latestOnly: !script.pinnable,
-      };
-    }
-    return {
-      method: "script",
-      command: "bash",
-      args: ["-c", script.script, "goat-install", ...(script.pinnable ? [requested] : [])],
-      latestOnly: !script.pinnable,
-    };
-  }
+  const artifact = platform === "win32" ? undefined : recipe.posixArtifact;
+  if (artifact !== undefined)
+    return requested === "latest" || requested === artifact.version
+      ? {
+          method: "script",
+          command: "tar",
+          displayName: recipe.displayName,
+          artifact,
+        }
+      : null;
   if (recipe.npmPackage === null) return null;
   return {
     method: "npm",
     command: "npm",
     args: ["install", "-g", `${recipe.npmPackage}@${requested}`, ...(recipe.npmArgs ?? [])],
-    latestOnly: false,
   };
+}
+
+/** What a person reads as what a host ran: the npm line, or the pinned release it verified. */
+export function describeInstall(command: InstallCommand): string {
+  if (command.method === "npm") return ["npm", ...command.args].join(" ");
+  const { hostname } = new URL(command.artifact.url.replace(/\{(?:os|arch)\}/gu, "x"));
+  return `${command.displayName} ${command.artifact.version} from ${hostname}, SHA-256 checked before unpacking`;
 }
 
 export function installMethod(
@@ -274,4 +303,33 @@ export function relayableBrowserUrl(
     if (target !== null && LOOPBACK.test(target.hostname)) return null;
   }
   return url.toString();
+}
+
+/**
+ * A sign-in instruction another machine reported, as this machine relays it: a vendor page or
+ * device code only on the vendor's own hosts, otherwise the recipe's own words for that driver.
+ */
+export function trustedLogin(
+  driver: ProviderHostSyncDriver,
+  host: string,
+  login: ProviderSyncLogin,
+): ProviderSyncLogin {
+  const recipe = RECIPES[driver];
+  const terminal = { type: "terminal", command: recipe.terminalLogin } as const;
+  if (login.type === "device_code") {
+    const url = safeUrl(login.url);
+    const vendor = url !== null && (recipe.deviceLogin?.hosts ?? []).includes(url.hostname);
+    // The page alone: a remote's query or fragment never rides along.
+    return url !== null && vendor && /^[A-Z0-9]{4,5}-[A-Z0-9]{4,6}$/u.test(login.userCode)
+      ? { type: "device_code", url: url.origin + url.pathname, userCode: login.userCode }
+      : terminal;
+  }
+  if (login.type === "browser")
+    return relayableBrowserUrl(driver, login.url, false) === null ? terminal : login;
+  if (login.type === "open_host")
+    return {
+      type: "open_host",
+      instruction: `Finish ${recipe.displayName} sign-in in GOAT on ${host}: Settings, Providers, ${recipe.displayName}.`,
+    };
+  return terminal;
 }
