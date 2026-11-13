@@ -18,6 +18,14 @@ struct OverlayListedWindow: Equatable {
 }
 
 enum OverlayOrder {
+  static func showsForForegroundTarget(
+    target: CGWindowID, frontmostPid: Int?, windows: [OverlayListedWindow]
+  ) -> Bool {
+    guard let frontmostPid, let targetWindow = windows.first(where: { $0.windowId == target })
+    else { return false }
+    return targetWindow.pid == frontmostPid
+  }
+
   /// Whether the overlay must also be raised with orderFrontRegardless after ordering it above
   /// the target. macOS 26 can leave a normal-level window from another process behind a target
   /// that is already frontmost even after `order(.above, relativeTo:)`. Raising is safe only

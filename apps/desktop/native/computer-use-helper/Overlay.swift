@@ -128,24 +128,24 @@ final class AgentOverlay {
     view.wantsLayer = true
     let arrow = CGMutablePath()
     arrow.move(to: .zero)
-    arrow.addLine(to: CGPoint(x: 0, y: -22))
-    arrow.addLine(to: CGPoint(x: 6, y: -16))
-    arrow.addLine(to: CGPoint(x: 15, y: -17))
+    arrow.addLine(to: CGPoint(x: 0, y: -5.5))
+    arrow.addLine(to: CGPoint(x: 1.5, y: -4))
+    arrow.addLine(to: CGPoint(x: 3.75, y: -4.25))
     arrow.closeSubpath()
     cursorLayer.path = arrow
     cursorLayer.fillColor = NSColor(srgbRed: 0.27, green: 0.52, blue: 1, alpha: 1).cgColor
     cursorLayer.strokeColor = NSColor.white.cgColor
-    cursorLayer.lineWidth = 2
+    cursorLayer.lineWidth = 0.5
     cursorLayer.shadowColor = NSColor.black.cgColor
     cursorLayer.shadowOpacity = 0.3
-    cursorLayer.shadowRadius = 2
+    cursorLayer.shadowRadius = 0.5
     cursorLayer.shadowPath = arrow
     cursorLayer.isHidden = true
     view.layer?.addSublayer(cursorLayer)
-    thinkLayer.path = CGPath(ellipseIn: CGRect(x: -12, y: -12, width: 24, height: 24), transform: nil)
+    thinkLayer.path = CGPath(ellipseIn: CGRect(x: -3, y: -3, width: 6, height: 6), transform: nil)
     thinkLayer.fillColor = NSColor.clear.cgColor
     thinkLayer.strokeColor = NSColor(srgbRed: 0.27, green: 0.52, blue: 1, alpha: 0.55).cgColor
-    thinkLayer.lineWidth = 2
+    thinkLayer.lineWidth = 0.5
     thinkLayer.opacity = 0.15
     thinkLayer.isHidden = true
     view.layer?.addSublayer(thinkLayer)
@@ -313,6 +313,13 @@ final class AgentOverlay {
     guard let target else { return }
     let windows = overlayListedWindows()
     let ownPid = Int(getpid())
+    let frontmostPid = NSWorkspace.shared.frontmostApplication.map { Int($0.processIdentifier) }
+    guard OverlayOrder.showsForForegroundTarget(
+      target: target.windowId, frontmostPid: frontmostPid, windows: windows)
+    else {
+      panel.orderOut(nil)
+      return
+    }
     if panel.isVisible,
       OverlayOrder.isStacked(
         overlay: CGWindowID(panel.windowNumber), target: target.windowId, ownPid: ownPid,
@@ -325,7 +332,7 @@ final class AgentOverlay {
     panel.order(.above, relativeTo: Int(target.windowId))
     if OverlayOrder.raisesToFront(
       target: target.windowId,
-      frontmostPid: NSWorkspace.shared.frontmostApplication.map { Int($0.processIdentifier) },
+      frontmostPid: frontmostPid,
       ownPid: ownPid,
       windows: windows)
     {

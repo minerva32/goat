@@ -18,6 +18,17 @@ struct OverlayOrderTests {
       OverlayListedWindow(windowId: id, pid: pid, layer: layer, width: size, height: size)
     }
     let own = 99
+    check(
+      "a foreground target shows its cursor",
+      OverlayOrder.showsForForegroundTarget(
+        target: 1, frontmostPid: 10, windows: [window(1, pid: 10)]))
+    check(
+      "a background target does not show its cursor",
+      !OverlayOrder.showsForForegroundTarget(
+        target: 1, frontmostPid: 20, windows: [window(1, pid: 10), window(2, pid: 20)]))
+    check(
+      "a missing target does not show its cursor",
+      !OverlayOrder.showsForForegroundTarget(target: 1, frontmostPid: 10, windows: []))
     func raises(_ target: CGWindowID, frontmost: Int?, _ windows: [OverlayListedWindow]) -> Bool {
       OverlayOrder.raisesToFront(target: target, frontmostPid: frontmost, ownPid: own, windows: windows)
     }
