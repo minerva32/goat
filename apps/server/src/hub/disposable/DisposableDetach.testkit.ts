@@ -65,6 +65,8 @@ export const fakeDetachHome = (host: ReturnType<typeof fakeEnrollHost>) => {
      * while this count lasts; a new journalled id is refused link_retirement_owned (foreignRetirement).
      */
     commitFails: 0,
+    /** A resumed owner fails and its settle cannot be written, so its entry stays open. */
+    resumeOpen: false,
     /**
      * Recover answers link_retirement_pending until a repeat of the committed forced revoke clears
      * its receipt; while pendingFault holds (a full disk), a repeat does not clear it.
@@ -75,6 +77,8 @@ export const fakeDetachHome = (host: ReturnType<typeof fakeEnrollHost>) => {
     busy: 0,
     /** The next journal reads fail, as a lost answer would. */
     loseRead: 0,
+    /** A transient fault the test aims at one journal read: true fails that read. */
+    readFails: undefined as ((operationId: string) => boolean) | undefined,
     /** The next revokes never reach the Home (GOAT stopped while sending): no answer, nothing recorded. */
     dropSends: 0,
     revokes,
@@ -84,10 +88,22 @@ export const fakeDetachHome = (host: ReturnType<typeof fakeEnrollHost>) => {
     forget: (linkId: string) => tombstones.delete(linkId),
     /**
      * A person's ocx link revoke --force --yes without an operation id: it takes over any unfinished
-     * removal, removes the link with a tombstone, and leaves each owner with its recorded outcome.
+     * removal, removes the link with a tombstone, and leaves an open or unknown owner of the receipt
+     * unknown and unresolved.
      */
     plainForce: (linkId: string) => {
-      for (const entry of revokes.values()) if (entry.linkId === linkId) delete entry.ownsReceipt;
+      // It fences an open or unknown owner of the receipt and settles it unknown and unresolved
+      // (fenceRetirementOwnerForForce); an owner in another state is left as it is.
+      for (const entry of revokes.values())
+        if (
+          entry.linkId === linkId &&
+          entry.ownsReceipt === true &&
+          (entry.state === "open" || entry.state === "unknown")
+        ) {
+          delete entry.ownsReceipt;
+          delete entry.resolvedAt;
+          entry.state = "unknown";
+        }
       if (!host.control.links.has(linkId)) return;
       remember(linkId);
       tombstones.add(linkId);
@@ -145,8 +161,9 @@ export const fakeDetachHome = (host: ReturnType<typeof fakeEnrollHost>) => {
     }
     control.sent.push(operationId);
     const known = revokes.get(operationId);
-    // A repeat of an open entry recovers it (link-operation.ts replayOperation, recoverRevoke).
-    if (known !== undefined && known.state === "open") {
+    // A repeat of an open entry that owns no removal recovers it (replayOperation, recoverRevoke);
+    // one that owns its removal resumes it first (resumeRetirementBeforeReplay).
+    if (known !== undefined && known.state === "open" && known.ownsReceipt !== true) {
       if (known.force ? control.forceOpen : control.purgeOpen)
         return refused(1, { code: "operation_journal_failed" });
       known.state = "unknown";
@@ -158,6 +175,11 @@ export const fakeDetachHome = (host: ReturnType<typeof fakeEnrollHost>) => {
     // tombstone again.
     if (known !== undefined && known.ownsReceipt === true) {
       delete known.resolvedAt;
+      // The resume fails and its settle cannot be written: the entry stays open.
+      if (control.resumeOpen) {
+        known.state = "open";
+        return refused(1, { code: "operation_journal_failed" });
+      }
       if (control.commitFails > 0 || (known.force && control.tombstoneLimit)) {
         known.state = "unknown";
         if (control.commitFails > 0) {
@@ -282,6 +304,7 @@ export const fakeDetachHome = (host: ReturnType<typeof fakeEnrollHost>) => {
     if (args[1] === "operations") {
       const entry = revokes.get(option(args, "--operation-id"));
       if (entry === undefined) return undefined;
+      if (control.readFails?.(entry.operationId) === true) return { code: 1, stdout: "" };
       if (control.loseRead > 0) {
         control.loseRead -= 1;
         return { code: 1, stdout: "" };
