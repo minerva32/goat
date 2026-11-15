@@ -31,6 +31,8 @@ import { goatBotHomeKey } from "./goatBotHomeRequest";
 import { useBotThreads } from "./useBotRoster";
 import { useGoatBotSession } from "./useGoatBotSession";
 import { focusTaskHeading, getTaskPaneFocus } from "./taskPaneFocus";
+import { GOAT_BOT_TASK_PANE_WIDTH } from "./goatBotLayout";
+import { useGoatBotHiddenChatNotice } from "./GoatBotHiddenChatNotice";
 import { useBotTaskLookup } from "./useBotTaskLookup";
 import { useAcknowledgeTaskRead } from "./useAcknowledgeTaskRead";
 import type { GoatBotLocalSubmission } from "./useGoatBotFollow";
@@ -58,6 +60,7 @@ export function GoatBotTaskPane({
     edge: "left",
   });
   const taskFocus = getTaskPaneFocus();
+  const hiddenChat = useGoatBotHiddenChatNotice(narrow);
   const headingRef = useStableCallback((element: HTMLHeadingElement | null) =>
     focusTaskHeading(taskFocus, taskId, element),
   );
@@ -111,6 +114,11 @@ export function GoatBotTaskPane({
   });
   const memberDeleted = member?.state === "deleted";
   const canSend = !memberDeleted && canSendToGoatBot(session.availability, session.canOperate);
+  // A draft belongs to the task and bot it was written for; opening another one empties the box.
+  const destination = `${environmentId}:${
+    member?.sessionThreadId ??
+    (session.availability.kind === "ready" ? session.availability.bot.threadId : "")
+  }:${taskId}`;
   const timelineRows = session.rowsForTask(taskId);
   const sourceIdentity = session.source?.identity ?? null;
   const [local, setLocal] = useState<{
@@ -152,7 +160,8 @@ export function GoatBotTaskPane({
         narrow
           ? undefined
           : ({
-              width: `var(${RESIZABLE_WIDTH_PROPERTY})`,
+              // The stored width shows again when the row is wider.
+              width: GOAT_BOT_TASK_PANE_WIDTH,
               [RESIZABLE_WIDTH_PROPERTY]: `${width}px`,
             } as CSSProperties)
       }
@@ -169,12 +178,18 @@ export function GoatBotTaskPane({
           narrow && COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS,
         )}
       >
-        <Button variant="ghost" size="sm" onClick={onClose}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onClose}
+          aria-describedby={hiddenChat.describedBy}
+        >
           {narrow ? "Back to Tasks" : "Close"}
         </Button>
         <div
           className={
-            narrow ? "order-last flex min-w-0 w-full items-baseline gap-2" : "min-w-0 flex-1"
+            // The title keeps 5rem beside the actions; below that the actions wrap to a new line.
+            narrow ? "order-last flex min-w-0 w-full items-baseline gap-2" : "min-w-20 flex-1"
           }
         >
           <Tooltip>
@@ -182,6 +197,7 @@ export function GoatBotTaskPane({
               render={
                 <h2
                   key={taskId}
+                  data-goat-bot-task-heading
                   className="min-w-0 flex-1 truncate font-semibold"
                   tabIndex={-1}
                   ref={headingRef}
@@ -207,6 +223,7 @@ export function GoatBotTaskPane({
             </p>
           )}
         </div>
+        {hiddenChat.notice}
         {task?.kind === "task" && (
           <>
             {session.supportsTaskRetry && isRetryableTaskStatus(task.task.status) ? (
@@ -395,6 +412,7 @@ export function GoatBotTaskPane({
         </GoatBotStepsReader>
       </GoatBotStepsProvider>
       <GoatBotComposer
+        key={destination}
         disabled={!canSend}
         botName={botName}
         placeholder={
