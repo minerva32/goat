@@ -192,6 +192,13 @@ desktop or phone (including a phone's Add route) with the machine's own GOAT by
 its address and pairing code is a connection of that client alone: the hub
 never sees it, so GOAT cannot refuse it and **Hub devices** does not mark it as
 a Conflict.
+Its OpenCodex link ends only through Detach. A request to remove it from the
+hub or to repair it, from an agent or from **Repair** and **Leave** in **Hub
+devices**, is refused by its Pen alias or its link before anything is asked
+or changed. Repair is not needed for a dropped tunnel:
+OpenCodex retries the link by itself, at least every 5 minutes, unless the
+machine's host key changed or a removal holds the link, and GOAT checks the
+machine every 30 minutes; a changed host key shows on its row.
 Its row in **Hub devices** shows **Disposable**, or **Conflict** when something
 about it is ambiguous, **Still in Pen** while its key is a Pen member, who
 attached it and how long it has been in its state.
@@ -217,9 +224,10 @@ check on it and names `ocx link operations resolve --operation-id <id> --yes` to
 run before you force it. A forced revoke that reads unknown goes the other way
 round, as OpenCodex asks: a force repeats it first, and the list names the
 resolve only if it stays unknown after that. If an unfinished removal by another revoke holds the
-link, the list says how to find it and names the
-`ocx link revoke --link-id <id> --force --yes` that finishes it on the hub; then
-detach it again. A revoke OpenCodex left running, or never recorded, goes again
+link, the list says how to find it; it names the
+`ocx link revoke --link-id <id> --force --yes` that finishes it on the hub unless
+another revoke is still open there, which you fix first; then detach it again.
+A revoke OpenCodex left running, or never recorded, goes again
 under its own id when you fix what stopped it and detach again. GOAT marks each
 purge it gives up on for a silent machine as resolved itself, and its own
 earlier revoke once a removal is done, so OpenCodex's journal does not fill up. If GOAT's removal of a silent machine's link stops,

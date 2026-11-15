@@ -245,7 +245,7 @@ import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrom
 import { SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
 import { TooltipProvider } from "./ui/tooltip";
 import { composerDraftHasUserContent, DraftId, useComposerDraftStore } from "../composerDraftStore";
-import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
+import { useShownThreadRouteTarget } from "../hooks/useShownThreadRouteTarget";
 import {
   SidebarSearchResultRow,
   type SidebarProviderEntry,
@@ -837,7 +837,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
   const rangeSelectTo = useThreadSelectionStore((s) => s.rangeSelectTo);
   const acknowledgeWoke = useAcknowledgeThreadWoke();
-  const routeTarget = useThreadRouteTarget();
+  // The Usage modal keeps the thread behind it current.
+  const routeTarget = useShownThreadRouteTarget().shownTarget;
   const routeDraftThread = useComposerDraftStore((store) =>
     routeTarget?.kind === "draft" ? store.getDraftSession(routeTarget.draftId) : null,
   );
@@ -2055,7 +2056,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     children: [
                       ...snoozePresets.map((preset) => ({
                         id: `snooze:${preset.id}`,
-                        label: `${preset.label} (${preset.whenLabel})`,
+                        label: preset.label,
+                        detail: preset.whenLabel,
                         disabled: !canOperateThreads(selectedThreads),
                       })),
                       {

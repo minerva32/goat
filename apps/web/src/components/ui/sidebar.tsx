@@ -18,6 +18,7 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useResizeDrag } from "~/hooks/useResizeDrag";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { useClientSettings } from "~/hooks/useSettings";
 import {
   getLocalStorageItem,
   setLocalStorageItem,
@@ -98,6 +99,12 @@ function useSidebar() {
 function useSidebarVisibility() {
   const { isMobile, open, openMobile } = useSidebar();
   return isMobile ? openMobile : open;
+}
+
+/** Whether the mobile sidebar sheet covers the page; false outside a SidebarProvider. */
+function useMobileSidebarSheetMounted() {
+  const context = React.use(SidebarContext);
+  return context !== null && context.isMobile && context.mobileSheetMounted;
 }
 
 // Same breakpoint as useIsMobile, also read when a shortcut fires.
@@ -288,6 +295,12 @@ function Sidebar({
   resizable?: boolean | SidebarResizableOptions;
 }) {
   const { isMobile, state, openMobile, setOpenMobile, setMobileSheetElement } = useSidebar();
+  // Not usePanelAnimationSettings: its navigation suppression would snap the sheet shut mid-exit when an item navigates.
+  const panelAnimationDurationMs = useClientSettings(
+    (settings) => settings.panelAnimationDurationMs,
+  );
+  const prefersReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
+  const panelAnimationsActive = panelAnimationDurationMs > 0 && !prefersReducedMotion;
   const offcanvasCollapsed = !isMobile && collapsible === "offcanvas" && state === "collapsed";
 
   const resolvedResizable = resolveSidebarResizable({ collapsible, isMobile, resizable });
@@ -316,6 +329,7 @@ function Sidebar({
         <Sheet onOpenChange={setOpenMobile} open={openMobile}>
           <SheetPopup
             ref={setMobileSheetElement}
+            {...(panelAnimationsActive ? {} : { transitionDurationMs: 0 })}
             className={cn(
               "w-(--sidebar-width) max-w-none bg-sidebar surface-grain p-0 text-sidebar-foreground",
               className,
@@ -893,6 +907,7 @@ export {
   SidebarProvider,
   SidebarRail,
   SidebarTrigger,
+  useMobileSidebarSheetMounted,
   useSidebar,
   useSidebarVisibility,
 };

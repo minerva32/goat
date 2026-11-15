@@ -5,11 +5,6 @@ import {
   deriveThreadRuntime,
 } from "@goat/client-runtime/state/thread-execution";
 import { checkpointFileTotals } from "@goat/client-runtime/state/thread-checkpoints";
-import { derivePendingBackgroundWork } from "@goat/shared/orchestrationV2PendingBackgroundWork";
-import {
-  latestUnheldRun,
-  usageLimitRunPresentedAsLatest,
-} from "@goat/shared/orchestrationV2ThreadError";
 import * as Option from "effect/Option";
 import type { SetStateAction } from "react";
 import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@goat/shared/model";
@@ -231,16 +226,6 @@ export function resolveProactiveTurnDiffAction(input: {
   }
   const totals = checkpointFileTotals(input.checkpoint);
   return totals.count >= 3 || totals.additions + totals.deletions >= 50 ? "open" : "ignore";
-}
-
-/** Mark reactivated Diff tabs to preserve review scope. Already-active tabs must not leave a marker for
- * the next open. */
-export function resolveExplicitDiffOpenOnActivate(input: {
-  readonly surfaceKind: RightPanelSurface["kind"];
-  readonly diffOpen: boolean;
-  readonly activeThreadRef: ScopedThreadRef;
-}): ScopedThreadRef | null {
-  return input.surfaceKind === "diff" && !input.diffOpen ? input.activeThreadRef : null;
 }
 
 export function codexArtifactTemplatePromptToAppend(
@@ -1205,10 +1190,10 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   );
 }
 
-// Returning to the window should land the caret in the composer, so the reader can type right
-// away. The exceptions are places where focus is deliberate: another text field, a terminal in
-// the drawer or the right panel, an open dialog, menu, or popup, or a region or sidebar row
-// reached from the keyboard. A plain focused button or a clicked row yields to the composer.
+// Window return puts the caret in the composer unless focus is deliberate: another text field,
+// a terminal, an open dialog, menu, or popup, a region, timeline, or sidebar row reached from the
+// keyboard, or a region with its own keys (aria-keyshortcuts). A plain focused button or a clicked
+// row yields to the composer.
 export function shouldRefocusComposerOnWindowFocus(
   activeElement:
     | (Pick<Element, "tagName" | "closest" | "getAttribute"> & { isContentEditable?: boolean })
@@ -1228,7 +1213,7 @@ export function shouldRefocusComposerOnWindowFocus(
   }
   return (
     activeElement.closest(
-      '[data-workspace-keyboard-focus], [data-sidebar-row]:focus-visible, [role="dialog"], [role="alertdialog"], [role="application"], [role="menu"], [role="listbox"], [data-slot$="-popup"], [data-terminal-owner]',
+      '[data-workspace-keyboard-focus], [data-sidebar-row]:focus-visible, [role="dialog"], [role="alertdialog"], [role="application"], [role="menu"], [role="listbox"], [data-slot$="-popup"], [data-terminal-owner], [aria-keyshortcuts]',
     ) === null
   );
 }
@@ -1628,28 +1613,6 @@ export function presentThreadShellFromProjection(
     latestRun,
     runtime,
   };
-}
-
-/** Background work the provider still runs after the latest run ended. */
-export function deriveThreadPendingBackgroundTasks(projection: ThreadStructure | null) {
-  if (projection === null) return [];
-  const sessionError =
-    projection.providerSessions.findLast(
-      (session) => session.providerInstanceId === projection.thread.providerInstanceId,
-    )?.lastError ?? null;
-  const latestRun =
-    usageLimitRunPresentedAsLatest(projection.runs, projection.turnItems, sessionError) ??
-    latestUnheldRun(projection.runs);
-  return [
-    ...derivePendingBackgroundWork({
-      latestRun,
-      providerThreads: projection.providerThreads,
-      turnItems: projection.turnItems,
-      activeProviderThreadId: projection.thread.activeProviderThreadId,
-      runs: projection.runs,
-      pullRequests: projection.thread.pullRequests,
-    }),
-  ];
 }
 
 /**

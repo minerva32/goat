@@ -2,7 +2,6 @@ import { InlineAudioPreview } from "../files/InlineAudioPreview";
 import { TimelineSentByLabel, type SentBySender } from "./TimelineSentByLabel";
 import { useConnectedEnvironmentIds, useEnvironment } from "../../state/environments";
 import { filePreviewKind } from "@goat/shared/filePreview";
-import { remarkEnableOrderedListNumbers } from "@goat/shared/markdownPipeline";
 import { findRevealRef } from "./markdownFindContext";
 import { type MessageId, type ServerProviderSkill, ThreadId } from "@goat/contracts";
 import { resolveUserMessagePresentation } from "@goat/client-runtime/user-message";
@@ -85,6 +84,7 @@ import { UserMessageContextReferenceChip } from "./UserMessageContextChips";
 import {
   resolvePreviewAnnotationImage,
   userMessageFileLabel,
+  USER_MESSAGE_REMARK_PLUGINS,
 } from "./TimelineUserMessageRow.logic";
 
 function UserVideoAttachment({ file }: { readonly file: ChatFileAttachment }) {
@@ -970,8 +970,6 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   );
 });
 
-const USER_MESSAGE_REMARK_PLUGINS = [remarkEnableOrderedListNumbers];
-
 const UserMessageBody = memo(function UserMessageBody(props: {
   text: string;
   renderContextReference?: (reference: ChatMarkdownContextReference) => ReactNode;
@@ -988,7 +986,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       cwd={props.markdownCwd}
       threadRef={ctx.threadRef ?? undefined}
       skills={props.skills}
-      className="text-foreground user-message-markdown"
+      className="text-message-foreground user-message-markdown"
       lineBreaks
       parseRawHtml={false}
       extraRemarkPlugins={USER_MESSAGE_REMARK_PLUGINS}
