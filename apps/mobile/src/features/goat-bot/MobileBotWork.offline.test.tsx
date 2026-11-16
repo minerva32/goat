@@ -174,6 +174,9 @@ vi.mock("../../native/StackHeader", () => ({
 }));
 vi.mock("../../state/atom-registry", () => ({ appAtomRegistry: {} }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => globalThis.crypto.randomUUID() }));
+vi.mock("react-native-keyboard-controller", () => ({
+  KeyboardEvents: { addListener: () => ({ remove: () => {} }) },
+}));
 vi.mock("../../state/channels", () => ({
   channelEnvironment: {
     // Home's shared current work; its links are not read in this file.
@@ -848,4 +851,39 @@ it("with no bot computer saved, follows another connected computer and shows onl
   expect(state.taskKeys.at(-1)).toBe("env2");
   expect(button("Patch the mini")?.hasAttribute("disabled")).toBe(false);
   expect(button("Fix the build")).toBeUndefined();
+});
+
+it("a routine's recent runs show while its computer is connected and are gone while it is offline", async () => {
+  state.routineTasks = [
+    {
+      id: "goat-bot-check-in:bot",
+      title: "Check in",
+      prompt: "Check in",
+      enabled: true,
+      schedule: { type: "fixed_time", timeOfDay: "09:00", weekdays: [1, 2, 3, 4, 5] },
+      threadId: "bot",
+      nextRunAt: null,
+      lastRunAt: null,
+      lastRunStatus: null,
+      lastRunError: null,
+      recentRuns: [
+        {
+          firingId: "firing-1",
+          status: "completed",
+          requestedAt: "2026-11-14T09:00:00.000Z",
+          completedAt: "2026-11-14T09:00:05.000Z",
+        },
+      ],
+    },
+  ];
+  const runDots = () =>
+    [...container.querySelectorAll("button")].filter((item) =>
+      item.getAttribute("aria-label")?.startsWith("Run on "),
+    );
+  await open();
+  expect(runDots()).toHaveLength(1);
+  state.connected = false;
+  await open();
+  expect(home()?.textContent).toContain("Routines are unavailable while");
+  expect(runDots()).toHaveLength(0);
 });
