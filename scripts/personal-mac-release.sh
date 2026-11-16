@@ -47,6 +47,8 @@ if [[ "${1:-}" == --dry-run ]]; then
   exit 0
 fi
 
+./node_modules/.bin/vp install --frozen-lockfile
+
 export CSC_NAME="$identity"
 export GOAT_CLI_MAC_SIGN_IDENTITY="$identity"
 export GOAT_CLI_MAC_SIGN_TEAM="$team"
