@@ -1,5 +1,7 @@
-import { beforeEach } from "vite-plus/test";
+import { beforeEach, vi } from "vite-plus/test";
 import { commands } from "vite-plus/test/browser";
+
+import { initializeI18n } from "../src/i18n/initializeI18n";
 import { installMockFactoryFailureReport } from "./reportMockFactoryFailure";
 
 declare module "vite-plus/test/browser" {
@@ -10,6 +12,11 @@ declare module "vite-plus/test/browser" {
 }
 
 installMockFactoryFailureReport();
+
+// Faces, the main row and Needs you read this gate; a test that is about it unmocks it.
+vi.mock("../src/components/goatBot/useGoatBotComputerReadable", () => ({
+  useGoatBotComputerReadable: () => true,
+}));
 
 // Test files in one browser session share the origin's storage, and persisted stores such as the
 // composer drafts hydrate from it when the test file imports them. Setup files run before that
@@ -40,3 +47,6 @@ beforeEach(async () => {
   // next tree that mounts, including trees inside ChatView or the right panel.
   localStorage.removeItem("goat.fileTreeExpandedDirectories");
 });
+
+// The app initializes GT at startup; components using its hooks need the same here.
+initializeI18n(() => {});

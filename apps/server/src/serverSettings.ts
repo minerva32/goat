@@ -767,7 +767,6 @@ export class ServerSettingsService extends Context.Service<
     readonly committedHub?: Effect.Effect<ServerSettings["hub"], ServerSettingsError>;
     /** Hub and cloud consent generations, advanced inside each commit; doubles may leave it out. */
     readonly hubConsentGenerations?: Effect.Effect<HubConsentGenerations>;
-
     readonly updateAgentWorkspaceTerminalPolicy?: (
       patch: ServerSettingsPatch,
       actorSessionId: AuthSessionId,
