@@ -26,6 +26,9 @@ if [[ -s "$archive" && -s "$archive.sha256" && -f "$archive_dir/source-sha" &&
   exit 0
 fi
 
+vp install --frozen-lockfile
+[[ -z "$(git status --porcelain)" ]] || { printf 'Linux runtime install changed tracked source.\n' >&2; exit 1; }
+
 restore_manifests() {
   git restore -- apps/server/package.json apps/web/package.json apps/desktop/package.json packages/contracts/package.json
 }
