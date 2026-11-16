@@ -3,6 +3,7 @@ import { useSyncExternalStore } from "react";
 
 import { primarySessionCheck } from "~/environments/primary/sessionCheck";
 import {
+  type EnvironmentPresentation,
   readEnvironment,
   readPrimaryEnvironmentId,
   useEnvironment,
@@ -13,19 +14,22 @@ const ignore = () => () => {};
 const notRevoked = () => false;
 
 /**
- * Whether this client may still read the computer: it is in the app's list, its connection is not
- * blocked for authentication or permission (in any phase), and, for this tab's own server, the
- * server has not said this tab's session is gone. Mobile applies the same rule.
+ * Whether this client may still read the computer: it is in the app's list and has not refused this
+ * device. Mobile's gate also closes during a start-over and after a denied bot-list read.
  */
 export function useGoatBotComputerReadable(environmentId: EnvironmentId | null): boolean {
-  const presentation = useEnvironment(environmentId);
-  const primaryId = usePrimaryEnvironmentId();
-  const ownServer = environmentId !== null && primaryId === environmentId;
-  const revoked = useSyncExternalStore(
-    ownServer ? primarySessionCheck.subscribe : ignore,
-    ownServer ? primarySessionCheck.revoked : notRevoked,
-  );
+  const { presentation, revoked } = useAccess(environmentId);
   return readableFrom(presentation, revoked);
+}
+
+/**
+ * Whether the computer is in the app's list and refused this device: its connection is blocked for
+ * authentication or permission (in any phase), or, for this tab's own server, the server said this
+ * tab's session is gone. A computer removed from the app is not a refusal.
+ */
+export function useGoatBotComputerRefused(environmentId: EnvironmentId | null): boolean {
+  const { presentation, revoked } = useAccess(environmentId);
+  return refusedFrom(presentation, revoked);
 }
 
 /** The same rule read from the store now, for a press the screen has not caught up with. */
@@ -34,9 +38,43 @@ export function readGoatBotComputerReadable(environmentId: EnvironmentId): boole
   return readableFrom(readEnvironment(environmentId), ownServer && primarySessionCheck.revoked());
 }
 
-function readableFrom(presentation: ReturnType<typeof readEnvironment>, revoked: boolean): boolean {
+/** The listed computers that refused this device, by the same rule, for GOAT Bot's availability. */
+export function useGoatBotRefusals(
+  environments: ReadonlyArray<EnvironmentPresentation>,
+  primaryEnvironmentId: EnvironmentId | null,
+): ReadonlySet<EnvironmentId> {
+  const revoked = usePrimarySessionRevoked(primaryEnvironmentId !== null);
+  const refused = new Set<EnvironmentId>();
+  for (const presentation of environments) {
+    const ownServer = presentation.environmentId === primaryEnvironmentId;
+    if (refusedFrom(presentation, ownServer && revoked)) refused.add(presentation.environmentId);
+  }
+  return refused;
+}
+
+function useAccess(environmentId: EnvironmentId | null) {
+  const presentation = useEnvironment(environmentId);
+  const primaryId = usePrimaryEnvironmentId();
+  const ownServer = environmentId !== null && primaryId === environmentId;
+  const revoked = usePrimarySessionRevoked(ownServer);
+  return { presentation, revoked };
+}
+
+function usePrimarySessionRevoked(ownServer: boolean): boolean {
+  return useSyncExternalStore(
+    ownServer ? primarySessionCheck.subscribe : ignore,
+    ownServer ? primarySessionCheck.revoked : notRevoked,
+  );
+}
+
+type Presentation = ReturnType<typeof readEnvironment>;
+
+function readableFrom(presentation: Presentation, revoked: boolean): boolean {
+  return presentation !== null && !refusedFrom(presentation, revoked);
+}
+
+function refusedFrom(presentation: Presentation, revoked: boolean): boolean {
   if (presentation === null) return false;
   const reason = presentation.connection.failure?.reason;
-  if (reason === "authentication" || reason === "permission") return false;
-  return !revoked;
+  return reason === "authentication" || reason === "permission" || revoked;
 }
