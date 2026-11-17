@@ -682,6 +682,14 @@ asleep stays in the list as **Unreachable**, with its threads as last seen and h
 is, for example "last state 5 min ago". It reconnects on its own when the machine comes back.
 Stopped cloud machines are never started by opening them.
 
+If a hub stops accepting this device, for example because its pairing was revoked, the machines
+you reach through it stay in your list and show that they were not accepted. Their threads and
+saved drafts are kept, and on the phone so are thread messages waiting to send. GOAT Bot
+messages still waiting to send are cleared when the page reloads or the app restarts, as before.
+Pairing with the hub again retries the machines, and each one reconnects once it also accepts
+this device. If you no longer need one, remove the machine, or remove the hub, which also
+removes the machines you reach only through it.
+
 When GOAT Connect becomes available, **Settings → Hub → Allow GOAT Connect devices to
 reach hub devices** (or **Settings → Hub devices** on mobile) gives standing consent to every
 trusted device signed in to the linked account. Any settings administrator can change it;
@@ -825,6 +833,12 @@ is refused at once, and a running server closes its open connections within
 about 5 seconds. An MCP request that was admitted before the revoke runs to
 completion on the access it was admitted with, and can still write or start work
 until it finishes. More commands are listed by `goat auth --help`.
+
+**Revoke others** keeps sessions signed in with the desktop app's built-in
+credential, normally the desktop app on that computer, and sessions Pen members
+hold; both are marked **Kept by Revoke others**. If you do not recognise one or
+suspect it, revoke it by itself. After you revoke the desktop app's session, quit
+and reopen GOAT on that computer.
 
 A session with an open connection stays listed after its access credential
 expires. **Settings → Connections** shows which sessions are connected;
