@@ -27,5 +27,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/goat-si/goat.git
           git fetch upstream dev
-          git merge --no-edit upstream/dev
+          git merge --no-commit --no-ff upstream/dev
+          if git rev-parse --verify -q MERGE_HEAD >/dev/null; then
+            git restore --source=HEAD --staged --worktree -- .github/workflows
+            git commit --no-edit
+          fi
           git push origin HEAD:agent-settings
