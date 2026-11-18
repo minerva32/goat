@@ -117,6 +117,7 @@ const DEFAULT_SETTINGS_ACCESS = {
   standingInstructions: agent,
   removeAgentCreditsOnMerge: agent,
   sourceControlWritingStyle: agent,
+  offeredSourceControlProviders: agent,
   pullRequestWatchPolicy: agent,
   sourceControlWriterModelSelection: agent,
   reviewGuidesEnabled: agent,
